@@ -1,0 +1,8 @@
+# minimal training config
+model_cfg: yolov8n.yaml
+data_yaml: data/stenosis.yaml
+masks_dir: data/masks
+epochs: 50
+target_layers: [15, 18, 21]
+fusion_mode: add
+reduction: 16
