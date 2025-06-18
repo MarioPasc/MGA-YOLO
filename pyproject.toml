@@ -1,28 +1,36 @@
 [build-system]
-build-backend = "setuptools.build_meta"
 requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
 [project]
+name = "MGA_YOLO"
+version = "0.1"
+description = "Mask-Guided-Attention YOLO for coronary-stenosis detection"
+readme = "README.md"
+requires-python = ">=3.10"
+
 authors = [
   {name = "Mario Pascual González", email = "mpascual@uma.es"},
 ]
-dependencies = [
 
+# ────────────── Runtime deps ──────────────
+dependencies = [
+  "torch>=2.2",       
+  "typer>=0.12",
+  "pyyaml>=6.0",
+  "pillow>=10.0",
+  "rich>=13.0",
 ]
-description = ""
-name = "MGA_YOLO"
-readme = "README.md"
-requires-python = ">=3.10"
-version = "0.1"
 
 [project.urls]
 Homepage = "https://github.com/MarioPasc/MGA-YOLO"
 
-
-
+# ────────────── Setuptools discovery ──────
 [tool.setuptools.packages.find]
-include = ["mga_yolo", "mga_yolo.external.ultralytics"]
+include = [
+  "mga_yolo",
+  "mga_yolo.external.ultralytics",
+]
 
 [tool.setuptools.package-data]
-"ICA_Detection.external.ultralytics" = ["*"]
-
+"mga_yolo.external.ultralytics" = ["*"]

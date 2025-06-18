@@ -9,7 +9,7 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
-from .cbam import CBAM
+from mga_yolo.nn.cbam import CBAM
 
 _Fusion = Literal["add", "mul", "concat"]
 

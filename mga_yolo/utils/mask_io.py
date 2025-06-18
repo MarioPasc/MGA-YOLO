@@ -3,17 +3,15 @@ Utility for locating and loading binary vessel masks.
 """
 from __future__ import annotations
 
-import logging
-import os
+
 import re
 from pathlib import Path
 from typing import Optional
 
+from mga_yolo import LOGGER as log
+
 import torch
 from PIL import Image
-
-log = logging.getLogger(__name__)
-
 
 def find_mask_path(masks_dir: str | Path, img_basename: str) -> Optional[Path]:
     """

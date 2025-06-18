@@ -12,3 +12,19 @@ try:
     __version__: str = _get_version("mga-yolo")
 except Exception:            # package not installed (editable checkout)
     __version__ = "0.0.0"
+
+# optimization/__init__.py
+
+import logging
+
+# Global logger for the entire optimization module
+LOGGER = logging.getLogger("mga_yolo")
+LOGGER.setLevel(logging.INFO)
+
+# Configure a default stream handler (can be overridden in cli or main)
+_handler = logging.StreamHandler()
+_formatter = logging.Formatter(
+    "[MGA-YOLO]: %(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+_handler.setFormatter(_formatter)
+LOGGER.addHandler(_handler)

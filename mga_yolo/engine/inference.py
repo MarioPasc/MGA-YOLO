@@ -6,10 +6,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
-from ultralytics import YOLO
+from mga_yolo.external.ultralytics import YOLO
 
-from ..cfg.defaults import MGAConfig
-from ..models.hooks import HookManager
+from mga_yolo.cfg.defaults import MGAConfig
+from mga_yolo.models.hooks import HookManager
 
 
 class MaskGuidedInference:

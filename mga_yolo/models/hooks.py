@@ -11,7 +11,7 @@ import torch.nn as nn
 
 from mga_yolo.layers.mga_cbam import MaskGuidedCBAM
 from mga_yolo.utils.mask_io import find_mask_path, load_mask
-from ..cfg.defaults import MGAConfig
+from mga_yolo.cfg.defaults import MGAConfig
 
 
 class HookManager:

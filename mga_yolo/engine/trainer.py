@@ -3,11 +3,11 @@ Thin training wrapper around Ultralytics YOLO.
 """
 from __future__ import annotations
 
-from ultralytics import YOLO
-from ultralytics.engine.trainer import BaseTrainer
+from mga_yolo.external.ultralytics import YOLO
+from mga_yolo.external.ultralytics.engine.trainer import BaseTrainer
 
-from ..cfg.defaults import MGAConfig
-from ..models.hooks import HookManager
+from mga_yolo.cfg.defaults import MGAConfig
+from mga_yolo.models.hooks import HookManager
 
 
 class MaskGuidedTrainer:
