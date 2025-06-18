@@ -1,0 +1,3 @@
+[submodule "mga_yolo/external/ultralytics"]
+	path = mga_yolo/external/ultralytics
+	url = https://github.com/MarioPasc/ultralytics.git
