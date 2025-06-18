@@ -16,7 +16,7 @@ from PIL import Image
 def find_mask_path(masks_dir: str | Path, img_basename: str) -> Optional[Path]:
     """
     Heuristically match `img_basename` (without extension) to a mask file.
-    Ported & cleaned from user’s `mask.py`. :contentReference[oaicite:0]{index=0}
+    Ported & cleaned from user’s `mask.py`. 
     """
     masks_dir = Path(masks_dir)
     stem = Path(img_basename).stem
@@ -28,7 +28,7 @@ def find_mask_path(masks_dir: str | Path, img_basename: str) -> Optional[Path]:
 
     # prefix match (e.g. "_mask" suffix)
     for p in masks_dir.iterdir():
-        if p.stem.startswith(stem):
+        if p.stem.startswith(stem) or p.stem == f"{stem}_mask":
             return p
 
     # numerical id match
