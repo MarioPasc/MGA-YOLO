@@ -13,8 +13,6 @@ try:
 except Exception:            # package not installed (editable checkout)
     __version__ = "0.0.0"
 
-# optimization/__init__.py
-
 import logging
 
 # Global logger for the entire optimization module
@@ -28,3 +26,4 @@ _formatter = logging.Formatter(
 )
 _handler.setFormatter(_formatter)
 LOGGER.addHandler(_handler)
+

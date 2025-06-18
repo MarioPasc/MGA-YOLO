@@ -29,7 +29,8 @@ Homepage = "https://github.com/MarioPasc/MGA-YOLO"
 [tool.setuptools.packages.find]
 include = [
   "mga_yolo",
-  "mga_yolo.external.ultralytics",
+  "mga_yolo.*",
+  "mga_yolo.external.ultralytics.*",
 ]
 
 [tool.setuptools.package-data]

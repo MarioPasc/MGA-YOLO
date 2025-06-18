@@ -192,3 +192,15 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+
+logs/
+*.log
+videos/
+validation_yolo_format/
+*.ipynb_checkpoints
+#*.ipynb
+jupyter/
+*.pth
+*.pt
+runs/*
