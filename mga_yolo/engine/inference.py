@@ -66,6 +66,7 @@ class VisualisingHookManager(HookManager):
             if block is None:
                 LOGGER.info(f"Before MGA-CBAM: in_channels={feat_before.shape[1]}")
 
+                # This shit working now yay
                 block = MaskGuidedCBAM(
                     in_channels=feat_before.shape[1],
                     reduction_ratio=self.cfg.reduction_ratio,
