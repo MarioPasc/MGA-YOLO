@@ -13,6 +13,10 @@ from mga_yolo import LOGGER as log
 import torch
 from PIL import Image
 
+from mga_yolo import LOGGER
+import logging
+LOGGER = logging.getLogger("mga_yolo.mask_io")
+
 def find_mask_path(masks_dir: str | Path, img_basename: str) -> Optional[Path]:
     """
     Heuristically match `img_basename` (without extension) to a mask file.
@@ -45,6 +49,8 @@ def find_mask_path(masks_dir: str | Path, img_basename: str) -> Optional[Path]:
 
 def load_mask(path: Path) -> torch.Tensor:
     """Load a **binary** mask as `float32` tensor in [0,1]."""
+    from torchvision.transforms.functional import to_tensor
     mask = Image.open(path).convert("L")
-    return torch.from_numpy((torch.ByteTensor(torch.ByteStorage.from_buffer(mask.tobytes()))
-                             .reshape(mask.size[1], mask.size[0]) > 0).float())
+    tensor_mask = (to_tensor(mask) > 0).float()
+    LOGGER.info(f"Loaded mask from {path}, shape: {tensor_mask.shape}")
+    return tensor_mask

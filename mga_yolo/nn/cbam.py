@@ -10,21 +10,24 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+from typing import Literal, Optional
+
 class _ChannelAttention(nn.Module):
-    def __init__(self, in_channels: int, reduction: int = 16):
+    def __init__(self, channels: int, reduction: int = 16):
         super().__init__()
-        mid = max(1, in_channels // reduction)
+        mid = max(1, channels // reduction)
         self.mlp = nn.Sequential(
-            nn.Flatten(2),                       # B, C, HW
-            nn.AdaptiveAvgPool1d(1),             # B, C, 1
-            nn.Linear(in_channels, mid, bias=False),
+            nn.Linear(channels, mid, bias=True),
             nn.ReLU(inplace=True),
-            nn.Linear(mid, in_channels, bias=False),
+            nn.Linear(mid, channels, bias=True),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        w = self.mlp(x).unsqueeze(-1).unsqueeze(-1)   # B, C, 1, 1
-        return x * w.sigmoid()
+        b, c, _, _ = x.shape
+        avg = F.adaptive_avg_pool2d(x, 1).view(b, c)
+        mx  = F.adaptive_max_pool2d(x, 1).view(b, c)
+        att = torch.sigmoid(self.mlp(avg) + self.mlp(mx)).view(b, c, 1, 1)
+        return x * att
 
 
 class _SpatialAttention(nn.Module):
@@ -33,16 +36,33 @@ class _SpatialAttention(nn.Module):
         self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        avg, mx = x.mean(1, keepdim=True), x.max(1, keepdim=True).values
-        w = self.conv(torch.cat([avg, mx], dim=1)).sigmoid()   # B, 1, H, W
-        return x * w
+        att = torch.cat((x.max(1, keepdim=True)[0], x.mean(1, keepdim=True)), 1)
+        att = torch.sigmoid(self.conv(att))
+        return x * att
 
 
 class CBAM(nn.Module):
-    def __init__(self, in_channels: int, reduction: int = 16):
+    """CBAM with optional fusion order."""
+    def __init__(
+        self,
+        channels: int,
+        r: int = 16,
+        sam_cam_fusion: Literal["sequential", "concat", "add"] = "sequential",
+    ):
         super().__init__()
-        self.ca = _ChannelAttention(in_channels, reduction)
+        self.ca = _ChannelAttention(channels, r)
         self.sa = _SpatialAttention()
+        self.fusion = sam_cam_fusion
+        if self.fusion == "concat":
+            self.post = nn.Conv2d(channels * 2, channels, 1, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.sa(self.ca(x))
+        if self.fusion == "sequential":
+            return self.sa(self.ca(x))
+        cam = self.ca(x)
+        sam = self.sa(x)
+        if self.fusion == "add":
+            return cam + sam
+        if self.fusion == "concat":
+            return self.post(torch.cat([cam, sam], 1))
+        raise ValueError(f"Unknown fusion {self.fusion}")
