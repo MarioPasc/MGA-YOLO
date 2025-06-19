@@ -34,8 +34,8 @@ sam_cam_fusion: "add"
 mga_pyramid_fusion: "add"
 
 # Experiment Settings
-project: /home/mpascual/research/tests/YOLO_MGA/
-name: experiment_newcode
+project: /home/mpascual/research/tests/YOLO_MGA/performance
+name: experiment
 visualize_features: true
 
 # Augmentation Settings

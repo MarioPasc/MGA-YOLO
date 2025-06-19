@@ -1,225 +1,523 @@
-"""
-HookManager — Mask-Guided CBAM for Ultralytics-YOLOv8
-----------------------------------------------------
-* Works with YOLO ≥ 8 (DetectionModel backend)
-* Handles **per-image** masks inside a batch
-* Falls back gracefully when a mask is missing or unreadable
-* Optional one-shot visualisation (mask ↓, before, after) controlled by
-  `cfg.visualize_features`
-"""
-
 from __future__ import annotations
-
-import logging
-import os
-import re
-from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
-
-import matplotlib.pyplot as plt  # only used when visualise=True
+from typing import Dict, List, Optional, Callable, Tuple, TypedDict
 import torch
 import torch.nn as nn
-import torchvision.transforms as T
 from PIL import Image
+import torchvision.transforms as transforms #type: ignore[import-untyped]
+from pathlib import Path
+import os
+import re
+import logging
+from dataclasses import dataclass, field
 
-from mga_yolo.cfg.defaults import MGAConfig
+# Add at the top with other imports
+import matplotlib.pyplot as plt
+import time
+
+# Dynamic import to avoid circular imports
 from mga_yolo.nn.mga_cbam import MaskGuidedCBAM
-from mga_yolo.utils.mask_io import find_mask_path  # exact+prefix; we add extra logic
+from mga_yolo.cfg.defaults import MGAConfig
 
-LOGGER = logging.getLogger("mga_yolo.hooks")
+# Configure logger
+from mga_yolo import LOGGER
+logger = logging.getLogger("mga_yolo.hooks")
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# util helpers
-# ────────────────────────────────────────────────────────────────────────────
-def _extra_mask_lookup(masks_dir: Path, stem: str) -> Optional[Path]:
-    """More aggressive lookup: numeric id match and *_mask suffix."""
-    files = list(masks_dir.iterdir())
-    # numeric id
-    m = re.search(r"(\d+)$", stem)
-    if m:
-        num = m.group(1)
-        for p in files:
-            if num in p.stem:
-                return p
-    # *_mask suffix
-    for p in files:
-        if p.stem == f"{stem}_mask":
-            return p
-    return None
+# Type definitions for better code clarity
+ImagePath = str
+LayerName = str
 
 
-def _load_mask(path: Path, size: Tuple[int, int]) -> Optional[torch.Tensor]:
-    try:
-        img = Image.open(path).convert("L")
-        img = T.Resize(size, interpolation=T.InterpolationMode.NEAREST)(img)
-        return T.ToTensor()(img).unsqueeze(0)  # [1,1,H,W]
-    except Exception:
-        LOGGER.exception("Failed to load or resize mask %s", path)
-        return None
+class FeatureMapBundle(TypedDict):
+    """Type definition for a feature map bundle."""
+
+    original: torch.Tensor
+    masked: Optional[torch.Tensor]
+    layer_name: str
+    image_name: Optional[str]
 
 
-def _visualise_once(
-    save_dir: Path,
-    tag: str,
-    mask: torch.Tensor,
-    before: torch.Tensor,
-    after: torch.Tensor,
-) -> None:
-    """
-    Save a single 3-panel PNG (mask ↓, before, after) once per `tag`.
-    The tensors are assumed 2-D (H×W) on CPU.
-    """
-    save_dir.mkdir(parents=True, exist_ok=True)
-    out_path = save_dir / f"{tag}.png"
-    if out_path.exists():
-        return
-
-    fig, axs = plt.subplots(1, 3, figsize=(12, 4))
-    axs[0].imshow(mask, cmap="gray")
-    axs[0].set_title("Mask ↓")
-    axs[1].imshow(before, cmap="viridis")
-    axs[1].set_title("Feat before")
-    axs[2].imshow(after, cmap="viridis")
-    axs[2].set_title("Feat after")
-    for ax in axs:
-        ax.axis("off")
-    fig.suptitle(tag)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    LOGGER.info("Saved feature-map visualisation → %s", out_path)
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# main class
-# ────────────────────────────────────────────────────────────────────────────
 class HookManager:
-    """Attach mask-guided CBAM blocks to arbitrary backbone layers."""
+    """
+    Manages forward hooks for Mask-Guided Attention in neural networks.
+
+    This class applies segmentation masks to feature maps during forward passes
+    through a neural network using a configurable attention mechanism.
+    The implementation is specifically tailored for YOLOv8's feature pyramid
+    network layers (P3, P4, P5).
+    """
 
     def __init__(
         self,
         cfg: MGAConfig,
-        get_image_path_fn: Optional[Callable[[int], str]] = None,
+        get_image_path_fn: Optional[Callable[[int], Optional[str]]] = None,
     ) -> None:
-        self.cfg = cfg
+        """
+        Initialize the hook manager.
+
+        Args:
+            masks_folder: Path to folder containing segmentation masks
+            target_layers: List of layer names to apply MGA (default: P3, P4, P5)
+            get_image_path_fn: Function to get image path from batch index
+            config: Configuration for mask-guided attention
+        """
+        self.config: MGAConfig = cfg
+
+        self.masks_folder = cfg.masks_dir
+        self.target_layers = [str(i) for i in cfg.target_layers]
         self.get_image_path_fn = get_image_path_fn
+        self.hooks: List[torch.utils.hooks.RemovableHandle] = []
 
-        self._handles: List[torch.utils.hooks.RemovableHandle] = []
-        self._module_cache: Dict[tuple[str, int], nn.Module] = {}
-        self._batch_paths: List[Path] = []
+        # Module cache to avoid recreating attention modules
+        self._module_cache: Dict[str, nn.Module] = {}
 
-        # one-shot visualisation book-keeping
-        self._visualised: set[str] = set()
+        # Batch tracking attributes
+        self.current_batch_paths: List[str] = []
 
-    # ─────────────────── public API ─────────────────── #
-    def set_batch_paths(self, paths: Sequence[str | Path]) -> None:
-        self._batch_paths = [Path(p) for p in paths]
+        # Setup logger
+        logger.debug(f"[HookManager] Initialized")
 
-    def register(self, model: nn.Module) -> None:
-        self.clear()
-        wanted = {f"model.{str(i)}" for i in self.cfg.target_layers}
+    def register(self, model: nn.Module) -> nn.Module:
+        """
+        Register MGA hooks to the model.
 
-        if not hasattr(model, "model"):
-            raise AttributeError("Expected `model.model` ModuleList")
+        Args:
+            model: The YOLO model to attach hooks to
 
-        for name, module in model.model.named_modules():
+        Returns:
+            The model with hooks attached
+        """
+        # Clear existing hooks
+        self.clear_hooks()
 
-            if name in wanted:
-                h = module.register_forward_hook(self._hook_fn(name))
-                self._handles.append(h)
-                LOGGER.info("Hook registered on layer %s", name)
+        # Reset module cache
+        self._module_cache = {}
 
-    def clear(self) -> None:
-        for h in self._handles:
-            h.remove()
-        self._handles.clear()
-        self._module_cache.clear()
+        # Hook counter for logger
+        hooks_registered = 0
 
-    # context-manager sugar
-    def __enter__(self):
-        return self
+        # Register hooks
+        if hasattr(model, "model") and isinstance(model.model, nn.Module):
+            for name, module in model.model.named_modules():
+                """
+                This code line gives the structure of the YOLO model for training.
+                The main issue is that, when checking the layer names during inference,
+                we had the prefix "model.*", but, during training, we only have the name
+                of the layer: ["15", "18", "21"]
 
-    def __exit__(self, *exc):
-        self.clear()
-        return False
-
-    # ─────────────────── internal ─────────────────── #
-    def _hook_fn(self, layer_name: str):
-        def inner(_mod: nn.Module, _inp, output: torch.Tensor):
-            B, C, H, W = output.shape
-            out_chunks = []
-
-            for idx in range(B):
-                # --- resolve image path ------------------------------------ #
-                img_path = (
-                    self._batch_paths[idx]
-                    if idx < len(self._batch_paths)
-                    else Path(self.get_image_path_fn(idx))
-                    if self.get_image_path_fn
-                    else None
+                logger.debug(
+                    f"[HookManager] {name} -> {module}, {type(module)}, {self.target_layers}"
                 )
-                if img_path is None:
-                    out_chunks.append(output[idx : idx + 1])
-                    continue
+                """
+                if isinstance(module, torch.nn.Module) and name in self.target_layers:
+                    
+                    # Hook to apply masks
+                    mga_hook = self._get_mga_hook(name)
+                    self.hooks.append(module.register_forward_hook(mga_hook))
+                    logger.debug(f"Found {name} in model")
+                    logger.debug(f"Hook object @ {self.hooks[-1]}")
 
-                # --- resolve mask ------------------------------------------ #
-                mpath = find_mask_path(self.cfg.masks_dir, img_path.stem)
-                if mpath is None:
-                    mpath = _extra_mask_lookup(Path(self.cfg.masks_dir), img_path.stem)
-                if mpath is None:
-                    out_chunks.append(output[idx : idx + 1])
-                    continue
+                    hooks_registered += 1
 
-                mask = _load_mask(mpath, (H, W))
-                if mask is None:
-                    out_chunks.append(output[idx : idx + 1])
-                    continue
-                mask = mask.to(output.device)
+        logger.debug(f"[HookManager] Registered {hooks_registered} MGA hooks")
+        return model
 
-                # --- CBAM (cached per layer+channels) ---------------------- #
-                key = (layer_name, C)
-                block = self._module_cache.get(key)
-                if block is None:
-                    block = MaskGuidedCBAM(
-                        in_channels=C,
-                        reduction=self.cfg.reduction_ratio,
-                        fusion=self.cfg.mga_pyramid_fusion,
-                        sam_cam_fusion=self.cfg.sam_cam_fusion,
-                    ).to(output.device)
-                    self._module_cache[key] = block
+    def clear_hooks(self) -> None:
+        """Remove all registered hooks to prevent memory leaks."""
+        for hook in self.hooks:
+            hook.remove()
+        self.hooks = []
+        logger.debug("[HookManager] Cleared all hooks")
 
-                feat_before = output[idx : idx + 1]
-                feat_after = block(feat_before, mask.expand_as(feat_before))
+    def __del__(self) -> None:
+        """Ensure hooks are cleared when object is deleted."""
+        self.clear_hooks()
 
-                # optional visualisation — only first image seen for that tag
-                if (
-                    self.cfg.visualize_features
-                    and (tag := f"{img_path.stem}_{layer_name}") not in self._visualised
-                ):
-                    _visualise_once(
-                        save_dir=Path(self.cfg.project_dir) / "feature_vis",
-                        tag=tag.replace(".", "-"),
-                        mask=mask.squeeze().cpu(),
-                        before=feat_before.mean(1).squeeze().cpu(),
-                        after=feat_after.mean(1).squeeze().cpu(),
+    def _get_mga_hook(self, layer_name: str) -> Callable:
+        """
+        Create a hook function that applies the mask to feature maps.
+
+        Args:
+            layer_name: Name of the layer for reference
+
+        Returns:
+            Hook function to be registered with PyTorch's register_forward_hook
+        """
+
+        def hook(
+            module: nn.Module,
+            input_feat: Tuple[torch.Tensor, ...],
+            output: torch.Tensor,
+        ) -> torch.Tensor:
+            # The batch contains multiple images
+            batch_size = output.shape[0]
+            modified_outputs = []
+
+            logger.debug(
+                f"[HookManager]: hook called for layer={layer_name} with shape={tuple(output.shape)}"
+            )
+
+            # Process each image in the batch
+            for i in range(batch_size):
+                try:
+                    # Get current image path from batch
+                    img_path = None
+                    if hasattr(self, "current_batch_paths") and i < len(
+                        self.current_batch_paths
+                    ):
+                        img_path = self.current_batch_paths[i]
+                    elif self.get_image_path_fn:
+                        img_path = self.get_image_path_fn(i)
+                    logger.debug(f"{img_path}")
+
+                    if img_path is None:
+                        # No image path, use original output
+                        modified_outputs.append(output[i : i + 1])
+                        continue
+
+                    # Find corresponding mask
+                    img_basename = Path(img_path).stem
+                    mask_path = self._find_mask_path(img_basename)
+
+                    logger.debug("=========================")
+                    logger.debug(f"[HookManager] Image basename: {img_basename}")
+                    logger.debug(f"[HookManager] Mask path: {mask_path}")
+                    logger.debug("=========================")
+
+                    if mask_path is None:
+                        # No mask found, use original output
+                        modified_outputs.append(output[i : i + 1])
+                        continue
+
+                    # Load and process mask
+                    feature_h, feature_w = output.shape[2], output.shape[3]
+                    mask_tensor = self._process_mask(mask_path, (feature_h, feature_w))
+
+                    if mask_tensor is None:
+                        # Mask processing failed, use original output
+                        modified_outputs.append(output[i : i + 1])
+                        continue
+
+                    # Move mask to correct device
+                    mask_tensor = mask_tensor.to(output.device)
+
+                    # Expand mask dimensions to match output channels
+                    expanded_mask = mask_tensor.expand(
+                        1, output.shape[1], feature_h, feature_w
                     )
-                    self._visualised.add(tag)
 
-                out_chunks.append(feat_after)
+                    # Apply mask to feature map with configured strategy
+                    feature_map = output[i : i + 1]
+                    masked_output = self._apply_mask_with_cbam(
+                        feature_map, expanded_mask, layer_name
+                    )
 
-            return torch.cat(out_chunks, dim=0)
+                    modified_outputs.append(masked_output)
 
-        return inner
+                    if i == 0 and self._should_visualize_feature_map(layer_name):
+                        self._visualize_feature_maps(
+                            feature_map,
+                            expanded_mask,
+                            masked_output,
+                            layer_name,
+                            img_basename,
+                        )
 
-    # allow changing config on the fly
-    def set_config(self, cfg: MGAConfig) -> None:
-        self.cfg = cfg
-        self._module_cache.clear()
+                except Exception as e:
+                    # Log error and fall back to original output
+                    logger.exception(
+                        f"[HookManager] Error in MGA hook for batch item {i}: {e}"
+                    )
+                    modified_outputs.append(output[i : i + 1])
 
-    # repr for debugging
-    def __repr__(self) -> str:
-        return (
-            f"HookManager(target_layers={self.cfg.target_layers}, "
-            f"hooks={len(self._handles)})"
+            # Combine modified outputs back into a batch
+            if modified_outputs:
+                combined_output = torch.cat(modified_outputs, dim=0)
+
+                return combined_output
+            else:
+                return output
+
+        return hook
+
+    def _apply_mask_with_cbam(
+        self,
+        feature_map: torch.Tensor,
+        mask: torch.Tensor,
+        layer_name: str,
+    ) -> torch.Tensor:
+        """
+        Apply mask to feature map with CBAM attention.
+
+        Implementation follows the MGA-YOLO approach:
+        1. Create masked features: Fmasked = F⊗M
+        2. Apply CBAM: F~ = CBAM(Fmasked)
+
+        Args:
+            feature_map: Input feature map [B,C,H,W]
+            mask: Binary mask [B,C,H,W]
+            layer_name: Name of the layer for module caching
+
+        Returns:
+            Modified feature map with same shape as input
+        """
+        # Get number of channels from feature map
+        channels = feature_map.shape[1]
+
+        logger.debug(
+            f"Using Mask-Guided CBAM with {self.config.sam_cam_fusion} SAM-CAM fusion method."
         )
+        logger.debug(
+            f"Using {self.config.mga_pyramid_fusion} fusion method for MGA pyramid fusion."
+        )
+        logger.debug(f"Using {self.config.reduction_ratio} reduction ratio for CBAM.")
+        logger.debug(f"Using {channels} channels for CBAM.")
+
+        # Get or create CBAM module with appropriate channel count
+        cache_key = f"{layer_name}_{channels}"
+        if cache_key not in self._module_cache:
+            self._module_cache[cache_key] = MaskGuidedCBAM(
+                in_channels=channels,
+                reduction_ratio=self.config.reduction_ratio,
+                sam_cam_fusion=self.config.sam_cam_fusion, #type: ignore
+                mga_pyramid_fusion=self.config.mga_pyramid_fusion, #type: ignore
+            ).to(feature_map.device)
+
+        mga_cbam = self._module_cache[cache_key]
+
+        # Apply CBAM to masked feature
+        enhanced_feature = mga_cbam(feature_map, mask)
+
+        return enhanced_feature
+
+    def _find_mask_path(self, img_basename: str) -> Optional[str]:
+        """
+        Find corresponding mask file for an image.
+
+        Args:
+            img_basename: Base filename of the image without extension
+
+        Returns:
+            Full path to the mask file if found, None otherwise
+        """
+        try:
+            if not os.path.exists(self.masks_folder):
+                logger.warning(
+                    f"[HookManager] Masks folder does not exist: {self.masks_folder}"
+                )
+                return None
+
+            mask_files = os.listdir(self.masks_folder)
+
+            # Strategy 1: Exact match
+            for ext in [".png", ".jpg", ".jpeg", ".bmp"]:
+                mask_path = os.path.join(self.masks_folder, f"{img_basename}{ext}")
+                logger.debug(
+                    f"=====\n[HookManager] Img basename: {img_basename}\nMask path {mask_path}\n====="
+                )
+                if os.path.exists(mask_path):
+                    return mask_path
+
+            # Strategy 2: Partial match
+            for mask_file in mask_files:
+                mask_basename = Path(mask_file).stem
+                if mask_basename == img_basename or mask_basename.startswith(
+                    img_basename
+                ):
+                    return os.path.join(self.masks_folder, mask_file)
+
+            # Strategy 3: Extract numerical ID and match
+            number_match = re.search(r"(\d+)$", img_basename)
+            if number_match:
+                number = number_match.group(1)
+                for mask_file in mask_files:
+                    if number in Path(mask_file).stem:
+                        return os.path.join(self.masks_folder, mask_file)
+
+            logger.debug(f"[HookManager] No mask found for image: {img_basename}")
+            return None
+
+        except Exception as e:
+            logger.exception(
+                f"[HookManager] Error finding mask for {img_basename}: {e}"
+            )
+            return None
+
+    def _process_mask(
+        self, mask_path: str, target_size: Tuple[int, int]
+    ) -> Optional[torch.Tensor]:
+        """
+        Load and process a mask to match feature map dimensions.
+
+        Args:
+            mask_path: Path to the mask file
+            target_size: Target size as (height, width)
+
+        Returns:
+            Processed mask tensor or None if processing failed
+        """
+        try:
+            # Load mask as grayscale image
+            mask = Image.open(mask_path).convert("L")
+
+            # Resize to match feature map dimensions
+            resized_mask = transforms.Resize(
+                target_size, interpolation=transforms.InterpolationMode.NEAREST
+            )(mask)
+
+            # Convert to tensor [1, 1, H, W]
+            mask_tensor = transforms.ToTensor()(resized_mask).unsqueeze(0)
+
+            logger.debug("=========================")
+            logger.debug(f"[HookManager] Mask path: {mask_path}")
+            logger.debug(
+                f"[HookManager] Pre-processed Mask shape: {transforms.ToTensor()(mask).size()}"
+            )
+            logger.debug(f"[HookManager] Resized Mask shape: {mask_tensor.size()}")
+            logger.debug("=========================")
+
+            return mask_tensor
+
+        except IOError:
+            logger.error(f"[HookManager] Cannot open mask file: {mask_path}")
+            return None
+        except Exception as e:
+            logger.exception(f"[HookManager] Error processing mask {mask_path}: {e}")
+            return None
+
+    def set_batch_paths(self, paths: List[str]) -> None:
+        """
+        Set the current batch image paths.
+
+        Args:
+            paths: List of image file paths in the current batch
+        """
+        # logger.debug(f"[HookManager] Setting batch paths: {paths}")
+        self.current_batch_paths = paths.copy() if paths else []
+
+    def set_config(self, config: MGAConfig) -> None:
+        """
+        Update the configuration for mask-guided attention.
+
+        Args:
+            config: New configuration
+        """
+        self.config = config
+        # Clear module cache to ensure new settings take effect
+        self._module_cache = {}
+
+    def __repr__(self) -> str:
+        """String representation of the HookManager."""
+        return (
+            f"HookManager(masks_folder='{self.masks_folder}', "
+            f"target_layers={self.target_layers}, "
+            f"active_hooks={len(self.hooks)})"
+        )
+
+    def _should_visualize_feature_map(self, layer_name: str) -> bool:
+        """
+        Determine if this layer's feature maps should be visualized.
+        By default, visualize only once per training run per layer.
+
+        Args:
+            layer_name: Name of the layer
+
+        Returns:
+            True if visualization should be created
+        """
+        # Map layer names to P3, P4, P5 designations
+        layer_map = {"model.15": "P3", "model.18": "P4", "model.21": "P5"}
+
+        p_layer = layer_map.get(layer_name, layer_name)
+
+        # Define visualization path
+        save_dir = Path(os.path.join(
+            self.config.project,
+            self.config.name,
+            "feature_maps",
+        ))
+        save_dir.mkdir(parents=True, exist_ok=True)
+        viz_path = save_dir / f"mga_visualization_{p_layer}.png"
+
+        # Check if visualization already exists
+        if viz_path.exists():
+            return False
+
+        return True
+
+    def _visualize_feature_maps(
+        self,
+        original_feature: torch.Tensor,
+        mask: torch.Tensor,
+        masked_output: torch.Tensor,
+        layer_name: str,
+        img_name: Optional[str] = None,
+    ) -> None:
+        """
+        Create and save visualizations of feature maps and masks.
+
+        Args:
+            original_feature: Original feature map tensor [1,C,H,W]
+            mask: Binary mask tensor [1,C,H,W]
+            masked_output: Modified feature map tensor [1,C,H,W]
+            layer_name: Name of the layer
+            img_name: Optional name of the image for the filename
+        """
+        try:
+            # Map layer names to P3, P4, P5 designations
+            layer_map = {"model.15": "P3", "model.18": "P4", "model.21": "P5"}
+            p_layer = layer_map.get(layer_name, layer_name)
+
+            # Create save directory if it doesn't exist
+            save_dir = Path(os.path.join(
+                self.config.project,
+                self.config.name,
+                "feature_maps",
+            ))
+            save_dir.mkdir(parents=True, exist_ok=True)
+            viz_path = save_dir / f"mga_visualization_{p_layer}.png"
+            if os.path.exists(viz_path):
+                return
+            # Check if file already exists to avoid re-creating
+            if viz_path.exists():
+                logger.debug(f"[HookManager] Visualization already exists: {viz_path}")
+                return
+
+            # Process tensors for visualization
+            # Convert to numpy and take first channel for visualization
+            orig_viz = original_feature[0, 0].detach().cpu().numpy()
+            mask_viz = mask[0, 0].detach().cpu().numpy()
+            output_viz = masked_output[0, 0].detach().cpu().numpy()
+
+            # Create figure with 1x3 subplot
+            plt.figure(figsize=(15, 5))
+
+            # Plot original feature map
+            plt.subplot(1, 3, 1)
+            plt.imshow(orig_viz, cmap="viridis")
+            plt.title(f"Original Feature Map ({p_layer})")
+            plt.colorbar()
+
+            # Plot mask
+            plt.subplot(1, 3, 2)
+            plt.imshow(mask_viz, cmap="gray")
+            plt.title(f"Downsampled Mask ({p_layer})")
+            plt.colorbar()
+
+            # Plot masked output
+            plt.subplot(1, 3, 3)
+            plt.imshow(output_viz, cmap="viridis")
+            plt.title(f"Masked Output ({p_layer})")
+            plt.colorbar()
+
+            # Add suptitle with layer info
+            plt.suptitle(f"Mask-Guided Attention for {p_layer} Layer", fontsize=16)
+            plt.tight_layout()
+
+            # Save the figure
+            plt.savefig(viz_path, dpi=200, bbox_inches="tight")
+            plt.close()
+
+            logger.debug(f"[HookManager] Saved visualization to {viz_path}")
+
+        except Exception as e:
+            logger.exception(f"[HookManager] Error creating visualization: {e}")

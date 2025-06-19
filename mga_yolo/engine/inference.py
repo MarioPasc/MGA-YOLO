@@ -55,16 +55,16 @@ class VisualisingHookManager(HookManager):
 
             
             mask = load_mask(mpath).to(feat_before.device)
-            LOGGER.info(f"Original mask shape: {mask.shape}")
+            LOGGER.debug(f"Original mask shape: {mask.shape}")
             mask_ds = F.interpolate(mask.unsqueeze(0),
                                 size=feat_before.shape[-2:],
                                 mode="nearest")
-            LOGGER.info(f"Downsampled mask shape: {mask_ds.shape}")
+            LOGGER.debug(f"Downsampled mask shape: {mask_ds.shape}")
 
             key = (layer_name, feat_before.shape[1])
             block = self._module_cache.get(key)
             if block is None:
-                LOGGER.info(f"Before MGA-CBAM: in_channels={feat_before.shape[1]}")
+                LOGGER.debug(f"Before MGA-CBAM: in_channels={feat_before.shape[1]}")
 
                 # This shit working now yay
                 block = MaskGuidedCBAM(
@@ -74,12 +74,12 @@ class VisualisingHookManager(HookManager):
                     mga_pyramid_fusion=self.cfg.mga_pyramid_fusion,
                 ).to(feat_before.device)
                 self._module_cache[key] = block
-            LOGGER.info(f"MGA-CBAM block created with reduction={self.cfg.reduction_ratio}")
+            LOGGER.debug(f"MGA-CBAM block created with reduction={self.cfg.reduction_ratio}")
 
             # Before and after block call
-            LOGGER.info(f"Calling block with feat shape {feat_before.shape} and mask shape {mask_ds.shape}")
+            LOGGER.debug(f"Calling block with feat shape {feat_before.shape} and mask shape {mask_ds.shape}")
             feat_after = block(feat_before, mask_ds)
-            LOGGER.info(f"After block call: feat_after shape {feat_after.shape}")
+            LOGGER.debug(f"After block call: feat_after shape {feat_after.shape}")
             
             # enqueue for plotting
             with torch.no_grad():
@@ -98,7 +98,7 @@ class VisualisingHookManager(HookManager):
 
     # ───────────── dump figures once per call ───────────── #
     def dump_figures(self) -> None:
-        LOGGER.info("Dumping %d visualisations → %s",
+        LOGGER.debug("Dumping %d visualisations → %s",
                     len(self._vis_pool), self.save_dir)
         for item in self._vis_pool:
             layer_tag = item["layer"].replace(".", "-")
@@ -138,7 +138,7 @@ class MaskGuidedInference:
 
         self.hooks: HookManager
         if save_feature_maps:
-            LOGGER.info("Using VisualisingHookManager for feature maps.")
+            LOGGER.debug("Using VisualisingHookManager for feature maps.")
             self.hooks = VisualisingHookManager(cfg, feature_dir)
         else:
             self.hooks = HookManager(cfg)

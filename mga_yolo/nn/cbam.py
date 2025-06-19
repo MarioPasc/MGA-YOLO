@@ -16,18 +16,32 @@ class _ChannelAttention(nn.Module):
     def __init__(self, channels: int, reduction: int = 16):
         super().__init__()
         mid = max(1, channels // reduction)
+        # Since the spatial dimensions are already reduced to 1×1
+        # by the global pooling operations, a 1×1 convolution is
+        # mathematically equivalent to a fully connected layer
+        # in this context.
         self.mlp = nn.Sequential(
-            nn.Linear(channels, mid, bias=True),
+            nn.Conv2d(
+                in_channels=channels,
+                out_channels=mid,
+                kernel_size=1,
+                bias=True,
+            ),
             nn.ReLU(inplace=True),
-            nn.Linear(mid, channels, bias=True),
+            nn.Conv2d(
+                in_channels=mid,
+                out_channels=channels,
+                kernel_size=1,
+                bias=True,
+            ),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, c, _, _ = x.shape
-        avg = F.adaptive_avg_pool2d(x, 1).view(b, c)
-        mx  = F.adaptive_max_pool2d(x, 1).view(b, c)
-        att = torch.sigmoid(self.mlp(avg) + self.mlp(mx)).view(b, c, 1, 1)
-        return x * att
+        avg = F.adaptive_avg_pool2d(x, 1)
+        mx  = F.adaptive_max_pool2d(x, 1)
+        att = torch.sigmoid(self.mlp(avg) + self.mlp(mx))
+        return x + x * att # Skip connection with attention
 
 
 class _SpatialAttention(nn.Module):
@@ -38,7 +52,7 @@ class _SpatialAttention(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         att = torch.cat((x.max(1, keepdim=True)[0], x.mean(1, keepdim=True)), 1)
         att = torch.sigmoid(self.conv(att))
-        return x * att
+        return x + x * att # Skip connection with attention
 
 
 class CBAM(nn.Module):
