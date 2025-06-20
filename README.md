@@ -14,7 +14,8 @@ MGA-YOLO is a research-grade fork of Ultralytics-YOLO that injects **mask-guided
 ![15](/assets/feature_maps/arcadetest_p45_v45_00045_layer-model-15.png)
 ![18](/assets/feature_maps/arcadetest_p45_v45_00045_layer-model-18.png)
 ![21](/assets/feature_maps/arcadetest_p45_v45_00045_layer-model-21.png)
-> Figure 1. *Masked feature maps after MGA-CBAM module for YOLOv8n*
+> Figure 1. *Masked feature maps after MGA-CBAM module for YOLOv8n*. Images used are from [ARCADE: Automatic Region-based Coronary Artery Disease diagnostics using x-ray angiography imagEs Dataset](https://doi.org/10.5281/zenodo.10390295)
+
 ---
 
 ## Table of Contents
