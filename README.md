@@ -198,10 +198,7 @@ MGA-YOLO/
 
 ## Contributing & Support
 
-1. **Issues** → GitHub Issues
-2. **Pull requests** are welcome
-
-For questions open an issue or email *[mpascual@uma.es](mailto:mpascual@uma.es)*.
+**Pull requests** are welcome. For questions open an issue or email *[mpascual@uma.es](mailto:mpascual@uma.es)*.
 
 ---
 
