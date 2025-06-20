@@ -187,7 +187,7 @@ MGA-YOLO/
 ```bibtex
 @software{pascual2025mgayolo,
   author  = {Pascual González, Mario},
-  title   = {MGA-YOLO: Mask-Guided Attention for Stenosis Detection with YOLO Models},
+  title   = {Mask-Guided YOLO for Coronary Stenosis Detection”},
   year    = {2025},
   url     = {https://github.com/MarioPasc/MGA-YOLO},
   note    = {MIT License}
