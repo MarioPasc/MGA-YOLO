@@ -1,0 +1,5 @@
+dataset: /home/mpascual/research/datasets/angio/arcade_mga
+train: detection/images/train  
+val: detection/images/val
+test: detection/images/test  
+masks_dir: masks         
