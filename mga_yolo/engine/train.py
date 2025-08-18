@@ -1,50 +1,113 @@
-"""MGA-YOLO custom training entrypoint.
-
-Usage (example):
-    python -m mga_yolo.engine.train \
-        --model configs/models/yolov8_test_segment_heads.yaml \
-        --data configs/data/data.yaml \
-        --epochs 1 --imgsz 640
-
-This is a thin wrapper around Ultralytics' YOLO class to ensure that custom
-MGA modules are imported before model construction.
-"""
 from __future__ import annotations
-import argparse
-from pathlib import Path
-from ultralytics import YOLO
-from ultralytics.utils import LOGGER
+from typing import Any, Dict
+import torch
+
+from ultralytics.models.yolo.detect.train import DetectionTrainer
+
+from mga_yolo.nn.losses.segmentation import SegmentationLoss, SegLossConfig
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser("MGA-YOLO Train")
-    p.add_argument("--model", type=str, required=True, help="Path to MGA YAML model file")
-    p.add_argument("--data", type=str, required=True, help="Path to data.yaml")
-    p.add_argument("--epochs", type=int, default=100)
-    p.add_argument("--imgsz", type=int, default=640)
-    p.add_argument("--batch", type=int, default=16)
-    p.add_argument("--device", type=str, default="auto")
-    p.add_argument("--workers", type=int, default=8)
-    p.add_argument("--project", type=str, default="runs/mga")
-    p.add_argument("--name", type=str, default="exp")
-    return p.parse_args()
+class MGATrainer(DetectionTrainer):
+    """
+    Trainer that understands MGAModel forward dict outputs.
+    Detection loss only (seg outputs passed through for logging / future loss).
+    """
 
+    def set_model_attributes(self) -> None:
+        super().set_model_attributes()
+        if not hasattr(self, "seg_loss"):
+            self.init_losses()
 
-def main() -> None:
-    args = parse_args()
-    LOGGER.info(f"[MGA] Starting training with model={args.model}")
-    model = YOLO(args.model)
-    model.train(
-        data=args.data,
-        epochs=args.epochs,
-        imgsz=args.imgsz,
-        batch=args.batch,
-        device=args.device,
-        workers=args.workers,
-        project=args.project,
-        name=args.name,
-    )
+    def init_losses(self) -> None:
+        """
+        Initialize loss objects.
+        Call after model is built. DetectionTrainer usually builds self.compute_loss.
+        """
+        # Parent prepares detection loss via self.model.init_criterion() internally.
+        # We just add segmentation.
+        args = self.args
+        seg_cfg = SegLossConfig(
+            bce_weight=getattr(args, "seg_bce_weight", 1.0),
+            dice_weight=getattr(args, "seg_dice_weight", 1.0),
+            scale_weights=getattr(args, "seg_scale_weights", [1.0, 1.0, 1.0]),
+            smooth=getattr(args, "seg_smooth", 1.0),
+            loss_lambda=getattr(args, "seg_loss_lambda", 1.0),
+            enabled=getattr(args, "seg_enable", True),
+        )
+        self.seg_loss = SegmentationLoss(seg_cfg)
 
+        # Extend loss names for logging (order matters)
+        base_names = getattr(self, "loss_names", ["box", "cls", "dfl"])
+        extra_names = ["p3_bce", "p3_dice", "p4_bce", "p4_dice", "p5_bce", "p5_dice", "seg_total"]
+        # Avoid duplicates if re-init
+        for n in extra_names:
+            if n not in base_names:
+                base_names.append(n)
+        self.loss_names = base_names
 
-if __name__ == "__main__":
-    main()
+    def build_dataset(self, img_path: str, mode: str = "train", batch: int | None = None):
+        """Dataset building unchanged, just delegate."""
+        return super().build_dataset(img_path, mode, batch)
+
+    def preprocess_batch(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+        batch = super().preprocess_batch(batch)
+        # Ensure masks_multi exists (or empty list fallback)
+        if "masks_multi" not in batch:
+            batch["masks_multi"] = []
+        return batch
+    
+    def criterion(self, preds, batch):  # overrides DetectionTrainer.criterion
+        """
+        Compute combined detection + segmentation loss.
+        preds: dict {'det': det_preds, 'seg': {...}} or raw detection output.
+        """
+        if isinstance(preds, dict):
+            det_preds = preds["det"]
+            seg_preds = preds.get("seg", {})
+        else:
+            det_preds = preds
+            seg_preds = {}
+
+        # 1. Detection loss (calls parent logic via self.compute_loss)
+        det_loss, det_loss_items = self.compute_loss(det_preds, batch)
+        # det_loss_items tensor length matches base detection loss_names subset
+
+        # 2. Segmentation loss (if enabled)
+        seg_total = torch.zeros_like(det_loss)
+        seg_logs: Dict[str, float] = {}
+        if isinstance(seg_preds, dict) and seg_preds and batch.get("masks_multi"):
+            seg_total, seg_logs = self.seg_loss(seg_preds, batch["masks_multi"])
+
+        total = det_loss + seg_total
+
+        # Assemble logging items aligned to self.loss_names
+        # Start with detection components already in det_loss_items
+        loss_item_list = det_loss_items.tolist() if hasattr(det_loss_items, "tolist") else list(det_loss_items)
+        # Append segmentation components in order (bce/dice per scale + seg_total)
+        for key in ["p3_bce", "p3_dice", "p4_bce", "p4_dice", "p5_bce", "p5_dice"]:
+            loss_item_list.append(seg_logs.get(key, 0.0))
+        loss_item_list.append(seg_logs.get("seg_total", float(seg_total.detach())))
+
+        # Convert back to tensor on same device for trainer logging expectations
+        self.loss_items = torch.as_tensor(loss_item_list, device=total.device)
+        return total
+
+    def train_step(self, batch: Dict[str, Any]):
+        """
+        Override to handle dict preds seamlessly while reusing mixed precision, etc.
+        """
+        with torch.cuda.amp.autocast(enabled=self.amp):
+            preds = self.model(batch["img"])
+            loss = self.criterion(preds, batch)
+        self.scaler.scale(loss).backward()
+        return loss
+
+    def get_validator(self):
+        """Use parent validator (it will ignore extra seg outputs)."""
+        return super().get_validator()
+
+    def resume_training(self, ckpt):
+        super().resume_training(ckpt)
+        # Re-init seg loss if resuming (optional safeguard)
+        if not hasattr(self, "seg_loss"):
+            self.init_losses()

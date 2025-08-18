@@ -22,11 +22,36 @@
   - Added CLI training entrypoint wrapping Ultralytics `YOLO` to ensure MGA modules are imported before model instantiation.
   - Goal: Simplify launching training with custom MGA YAML and dataset configuration.
 
+- `mga_yolo/engine/model.py`, `mga_yolo/engine/predict.py`, `mga_yolo/engine/val.py`
+  - Introduced `MGAModel` (subclass of `DetectionModel`) returning a dict `{det: ..., seg: {...}}` with raw per-scale mask logits plus detection output.
+  - Added `MGAPredictor` attaching `mga_masks` dict to each `Results` object and `MGAValidator` ignoring segmentation masks for current metrics.
+  - Goal: Provide a native end-to-end forward path without reliance on forward hooks.
+
+- `mga_yolo/nn/losses/segmentation.py`
+  - Implemented multi-scale segmentation loss (`SegmentationLoss`) combining BCE-with-logits and soft Dice per scale (P3/P4/P5) with configurable weights (`SegLossConfig`).
+  - Goal: Enable integration of coarse mask supervision into total training loss via `MGATrainer`.
+
+- `tests_mga/test_mga_basic.py`, `tests_mga/test_mga_train.py`
+  - Added smoke tests for: (a) model build & forward dict outputs (3 mask scales), (b) prediction path producing `mga_masks`, (c) synthetic dataset creator (future 1-epoch training smoke – currently minimal and may require installing `numpy`, `opencv-python`).
+  - Goal: Establish an initial regression harness for MGA functionality.
+
 ## Modified
 
 - `ultralytics/ultralytics/models/yolo/model.py`
-  - Inserted auto-detection path for model filenames containing "mga" to load via standard YOLO initialization without altering core task map.
-  - Goal: Seamless instantiation of MGA YAML architectures without creating a separate high-level model class.
+  - Added automatic task override (`task='mga'`) when model filename (or YAML content) indicates MGA usage ("mga" in stem or presence of `MGAMaskHead`).
+  - Extended `task_map` with an `mga` entry referencing `MGAModel`, `MGATrainer`, `MGAPredictor`, `MGAValidator`.
+  - NOTE: Current iterative edits introduced circular import/initialization issues causing `from ultralytics import YOLO` to fail; planned resolution is to revert most invasive changes and re-apply a minimal, low-risk task injection (see Pending section below).
+
+- `mga_yolo/engine/train.py`
+  - Extended to initialize and aggregate segmentation losses (`SegmentationLoss`) alongside standard detection loss (BCE + Dice per scale + global weighting) producing extra loss item logging keys: `p3_bce`, `p3_dice`, `p4_bce`, `p4_dice`, `p5_bce`, `p5_dice`, `seg_total`.
+  - Goal: Fuse segmentation supervision into training loop transparently.
+
+- `mga_yolo/engine/model.py`
+  - Tweaked forward pass implementation to always return dict and simplify stored outputs while collecting mask logits by layer index.
+  - Goal: Provide stable contract for downstream trainer/predictor.
+
+- (Planned fix not yet applied) `ultralytics/ultralytics/data/dataset.py`
+  - Identified duplicate `__getitem__` definition shadowing mask-loading logic; pending clean-up to ensure only enhanced version with `masks_multi` assembly remains (will finalize in next iteration).
 
 - `ultralytics/ultralytics/nn/modules/__init__.py`
   - Appended try/except import of `MGAMaskHead` so YAML parser can resolve the custom layer name.
@@ -39,10 +64,9 @@
 
 ## Intent / Pending (not yet implemented in code above)
 
-- Replace naive mask downsampling with connectivity-preserving algorithm from `mga_yolo/utils/mask_downsample.py`.
 - Implement `MGAAttention` and potential fused detection+segmentation loss integration.
 - Add segmentation loss computation using `masks_multi` inside training loop.
+  (Partially implemented now via `SegmentationLoss`; next step: verify with real dataset & add segmentation metrics such as per-scale Dice/mIoU.)
+- Resolve circular import introduced by extensive edits in `yolo/model.py` by reverting to upstream base and applying a minimal MGA task hook (safer path) OR refactoring remaining `yolo.*` references to lazy local imports.
+- Remove obsolete duplicate dataset `__getitem__` and finalize connectivity-preserving downsampling integration.
 
-## Rationale Summary
-
-These changes establish the structural scaffolding for MGA-YOLO: a declarative model spec, a custom mask generation head, dataset pipeline support for coarse masks, and registration/initialization paths so Ultralytics core can construct and train the extended architecture with minimal disruption. Further steps will integrate advanced downsampling, attention modules, and losses.

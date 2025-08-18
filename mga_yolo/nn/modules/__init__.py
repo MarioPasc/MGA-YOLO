@@ -3,12 +3,20 @@ Initializes logging for segmentation-related modules.
 """
 import logging
 
-LOGGER = logging.getLogger("mga_yolo.segmentation")
-if not LOGGER.handlers:
+SEG_LOGGER = logging.getLogger("mga_yolo.segmentation")
+if not SEG_LOGGER.handlers:
     handler = logging.StreamHandler()
     formatter = logging.Formatter("[%(asctime)s] %(levelname)s %(name)s: %(message)s")
     handler.setFormatter(formatter)
-    LOGGER.addHandler(handler)
-LOGGER.setLevel(logging.DEBUG)
+    SEG_LOGGER.addHandler(handler)
+SEG_LOGGER.setLevel(logging.DEBUG)
 
-__all__ = ["LOGGER"]
+ATT_LOGGER = logging.getLogger("mga_yolo.attention")
+if not ATT_LOGGER.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("[%(asctime)s] %(levelname)s %(name)s: %(message)s")
+    handler.setFormatter(formatter)
+    ATT_LOGGER.addHandler(handler)
+ATT_LOGGER.setLevel(logging.DEBUG)
+
+__all__ = ["SEG_LOGGER", "ATT_LOGGER"]
