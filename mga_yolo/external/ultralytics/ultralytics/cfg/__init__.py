@@ -55,6 +55,9 @@ TASK2DATA = {
     "classify": "imagenet10",
     "pose": "coco8-pose.yaml",
     "obb": "dota8.yaml",
+    # Custom MGA task (multi-scale guided attention with coarse masks). Defaults to detection-style small dataset.
+    # Users should override with their own data YAML (e.g. configs/data/data.yaml) when training.
+    "mga": "coco8.yaml",
 }
 TASK2MODEL = {
     "detect": "yolo11n.pt",

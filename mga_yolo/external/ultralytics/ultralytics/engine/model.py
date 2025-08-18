@@ -782,7 +782,7 @@ class Model(torch.nn.Module):
         overrides = YAML.load(checks.check_yaml(kwargs["cfg"])) if kwargs.get("cfg") else self.overrides
         custom = {
             # NOTE: handle the case when 'cfg' includes 'data'.
-            "data": overrides.get("data") or DEFAULT_CFG_DICT["data"] or TASK2DATA[self.task],
+            "data": overrides.get("data") or DEFAULT_CFG_DICT["data"] or TASK2DATA.get(self.task, TASK2DATA["detect"]),
             "model": self.overrides["model"],
             "task": self.task,
         }  # method defaults
@@ -790,7 +790,13 @@ class Model(torch.nn.Module):
         if args.get("resume"):
             args["resume"] = self.ckpt_path
 
-        self.trainer = (trainer or self._smart_load("trainer"))(overrides=args, _callbacks=self.callbacks)
+        # Use custom MGATrainer if model is an MGA model and no explicit trainer provided
+        if trainer is None and isinstance(self.model, (__import__('mga_yolo.engine.model', fromlist=['MGAModel']).MGAModel,)):
+            from mga_yolo.engine.train import MGATrainer  # local import to avoid hard dependency for non-MGA usage
+            trainer_cls = MGATrainer
+        else:
+            trainer_cls = trainer or self._smart_load("trainer")
+        self.trainer = trainer_cls(overrides=args, _callbacks=self.callbacks)
         if not args.get("resume"):  # manually set model only if not resuming
             self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=self.model.yaml)
             self.model = self.trainer.model
@@ -799,10 +805,14 @@ class Model(torch.nn.Module):
         self.trainer.train()
         # Update model and cfg after training
         if RANK in {-1, 0}:
-            ckpt = self.trainer.best if self.trainer.best.exists() else self.trainer.last
-            self.model, self.ckpt = attempt_load_one_weight(ckpt)
-            self.overrides = self.model.args
-            self.metrics = getattr(self.trainer.validator, "metrics", None)  # TODO: no metrics returned by DDP
+            if args.get("save", True):
+                ckpt = self.trainer.best if self.trainer.best.exists() else self.trainer.last
+                self.model, self.ckpt = attempt_load_one_weight(ckpt)
+                self.overrides = self.model.args
+                self.metrics = getattr(self.trainer.validator, "metrics", None)  # TODO: no metrics returned by DDP
+            else:
+                # When not saving, retain current model and basic metrics if validator ran
+                self.metrics = getattr(self.trainer.validator, "metrics", None) if getattr(self.trainer, 'validator', None) else None
         return self.metrics
 
     def tune(

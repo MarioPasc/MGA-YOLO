@@ -1,0 +1,75 @@
+from types import SimpleNamespace
+import torch
+from mga_yolo.engine.model import MGAModel
+from mga_yolo.engine.train import MGATrainer
+
+
+class _DummyScaler:
+    def scale(self, loss):
+        class _Obj:
+            def __init__(self, l):
+                self.l = l
+            def backward(self):
+                self.l.backward()
+        return _Obj(loss)
+
+
+class DummyTrainer(MGATrainer):  # type: ignore[misc]
+    def __init__(self):
+        # Bypass parent __init__ entirely to avoid dataset building
+        self.args = SimpleNamespace(
+            save=False,
+            seg_bce_weight=1.0,
+            seg_dice_weight=1.0,
+            seg_scale_weights=[1.0, 1.0, 1.0],
+            seg_smooth=1.0,
+            seg_loss_lambda=1.0,
+            seg_enable=True,
+        )
+        self.device = torch.device('cpu')
+        self.amp = False
+        self.scaler = _DummyScaler()
+        # base detection loss names mimic DetectionTrainer
+        self.loss_names = ["box", "cls", "dfl"]
+        # Provide a dummy compute_loss returning zero detection loss
+        def _compute_loss(preds, batch):
+            z = torch.zeros(1, requires_grad=True)
+            # detection returns (loss, items tensor)
+            return z, torch.zeros(3)
+        self.compute_loss = _compute_loss  # type: ignore[assignment]
+        self.epoch = 0
+        self.save_dir = '.'
+        self.init_losses()
+
+
+def test_mga_segmentation_loss_integration():
+    B = 2
+    imgsz = 128
+    model = MGAModel('configs/models/yolov8_test_segment_heads.yaml')
+    trainer = DummyTrainer()
+    trainer.model = model
+
+    img = torch.randn(B, 3, imgsz, imgsz)
+    preds = model(img)
+
+    # Build synthetic masks aligned to strides 8,16,32
+    masks_multi = []
+    for s in (8, 16, 32):
+        h = imgsz // s
+        w = imgsz // s
+        masks_multi.append((torch.rand(B, 1, h, w) > 0.5).float())
+    batch = {
+        'img': img,
+        'masks_multi': masks_multi,
+        'cls': torch.zeros((0,), dtype=torch.int64),
+        'bboxes': torch.zeros((0, 4), dtype=torch.float32),
+        'batch_idx': torch.zeros((0,), dtype=torch.int64),
+    }
+    total_loss = trainer.criterion(preds, batch)
+    assert total_loss.requires_grad, 'Loss should require grad.'
+    assert any(n == 'seg_total' for n in trainer.loss_names), 'seg_total not registered in loss names.'
+    seg_total_idx = trainer.loss_names.index('seg_total')
+    assert trainer.loss_items[seg_total_idx].item() >= 0.0
+    # Ensure individual scale metrics logged
+    for key in ['p3_bce', 'p4_bce', 'p5_bce', 'p3_dice', 'p4_dice', 'p5_dice']:
+        assert key in trainer.loss_names, f'{key} missing in loss names.'

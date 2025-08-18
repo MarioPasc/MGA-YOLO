@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Dict
 
-from ultralytics.models.yolo.detect.predict import DetectionPredictor
+from mga_yolo.external.ultralytics.ultralytics.models.yolo.detect.predict import DetectionPredictor
 
 
 class MGAPredictor(DetectionPredictor):
@@ -18,6 +18,7 @@ class MGAPredictor(DetectionPredictor):
             det, seg = preds, {}
         results = super().postprocess(det, img, orig_imgs)
         # Attach seg tensors (raw) per batch element
-        for r in results:
-            r.mga_masks = {k: v[r.idx].cpu() for k, v in seg.items()}  # type: ignore[attr-defined]
+        for bi, r in enumerate(results):
+            if seg:
+                r.mga_masks = {k: v[bi].detach().cpu() for k, v in seg.items()}  # type: ignore[attr-defined]
         return results

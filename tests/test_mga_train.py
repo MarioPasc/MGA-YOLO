@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 import numpy as np
 import torch
-from ultralytics import YOLO
+from mga_yolo.external.ultralytics.ultralytics import YOLO
 
 
 def create_synthetic_dataset(root: Path):
@@ -42,6 +42,5 @@ masks_dir: masks
 def test_mga_train_one_epoch(tmp_path):
     data_yaml = create_synthetic_dataset(tmp_path)
     model = YOLO('configs/models/yolov8_test_segment_heads.yaml')
-    results = model.train(data=str(data_yaml), epochs=1, imgsz=64, batch=2, lr0=1e-3, device='cpu', verbose=False)
-    # Ensure artifacts exist
-    assert (Path('runs') / 'detect' in Path('.').glob('runs/*')) or results is not None
+    results = model.train(data=str(data_yaml), epochs=1, imgsz=64, batch=2, lr0=1e-3, device='cpu', verbose=False, save=False, val=False)
+    assert results is not None

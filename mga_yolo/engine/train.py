@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any, Dict
 import torch
 
-from ultralytics.models.yolo.detect.train import DetectionTrainer
+from mga_yolo.external.ultralytics.ultralytics.models.yolo.detect.train import DetectionTrainer
 
 from mga_yolo.nn.losses.segmentation import SegmentationLoss, SegLossConfig
 
@@ -111,3 +111,36 @@ class MGATrainer(DetectionTrainer):
         # Re-init seg loss if resuming (optional safeguard)
         if not hasattr(self, "seg_loss"):
             self.init_losses()
+
+    # Disable checkpoint serialization if save flag is False (useful for unit tests)
+    def save_model(self):  # type: ignore[override]
+        if not getattr(self.args, 'save', True):
+            return
+        return super().save_model()
+
+    # --- Logging extensions -------------------------------------------------
+    def _log_losses_csv(self) -> None:
+        """Append current loss_items tensor (aligned to self.loss_names) to a CSV file under save_dir."""
+        try:
+            if not getattr(self.args, 'save', True):  # honor save flag
+                return
+            import csv
+            from pathlib import Path
+            if not hasattr(self, 'loss_names') or not hasattr(self, 'loss_items'):
+                return
+            save_dir = Path(getattr(self, 'save_dir', '.'))
+            csv_path = save_dir / 'loss_log.csv'
+            header = ['epoch'] + list(self.loss_names)
+            row = [self.epoch] + [float(x) for x in self.loss_items.detach().cpu().tolist()]
+            write_header = not csv_path.exists()
+            with csv_path.open('a', newline='') as f:
+                w = csv.writer(f)
+                if write_header:
+                    w.writerow(header)
+                w.writerow(row)
+        except Exception:
+            pass  # non-critical
+
+    def after_epoch(self):  # type: ignore[override]
+        super().after_epoch()
+        self._log_losses_csv()

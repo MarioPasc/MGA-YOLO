@@ -16,9 +16,8 @@ Typical YAML usage example:
     - [16, 1, MGAMaskHead, [256, 64]]  # in_channels=256, hidden=64 -> out_channels=1 (default)
 
 If you want multiple mask channels, pass out_channels > 1.
-
-Author: MGA-YOLO Group
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

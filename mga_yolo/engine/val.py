@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Dict
 
-from ultralytics.models.yolo.detect.val import DetectionValidator
+from mga_yolo.external.ultralytics.ultralytics.models.yolo.detect.val import DetectionValidator
 
 
 class MGAValidator(DetectionValidator):
