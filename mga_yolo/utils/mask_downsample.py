@@ -20,9 +20,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple, Sequence
 
 import numpy as np
+import cv2
+import concurrent.futures as futures
 from PIL import Image
 import matplotlib.pyplot as plt
 
@@ -166,7 +168,7 @@ class DownsampleConfig:
         If True, run a 3x3 binary closing to ensure 8-connectivity after rasterization.
     """
     factor: int
-    method: str = "skeleton_bresenham"
+    method: str = "skeleton_bresenham"  # or: 'area', 'maxpool', 'pyrdown', 'gaussian_maxpool'
     threshold: float = 0.2
     close_diagonals: bool = True
 
@@ -207,6 +209,45 @@ def downsample_preserve_connectivity(mask: np.ndarray, cfg: DownsampleConfig) ->
     H, W = bin_mask.shape
     Hc = (H + cfg.factor - 1) // cfg.factor
     Wc = (W + cfg.factor - 1) // cfg.factor
+
+    # Fast paths that still preserve thin structures reasonably well
+    if cfg.method == "area":
+        nh, nw = Hc, Wc
+        small = cv2.resize(bin_mask.astype(np.uint8), (nw, nh), interpolation=cv2.INTER_AREA)
+        out = (small > cfg.threshold).astype(np.uint8)
+        if cfg.close_diagonals:
+            kernel = np.ones((3, 3), np.uint8)
+            out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
+        return out
+
+    if cfg.method == "maxpool":
+        k = cfg.factor
+        pad_h = (k - (H % k)) % k
+        pad_w = (k - (W % k)) % k
+        if pad_h or pad_w:
+            mp = np.pad(bin_mask.astype(np.uint8), ((0, pad_h), (0, pad_w)), mode="constant")
+        else:
+            mp = bin_mask.astype(np.uint8)
+        H2, W2 = mp.shape
+        view = mp.reshape(H2 // k, k, W2 // k, k)
+        out = view.max(axis=(1, 3)).astype(np.uint8)
+        if cfg.close_diagonals:
+            kernel = np.ones((3, 3), np.uint8)
+            out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
+        return out
+
+    if cfg.method == "pyrdown":
+        s = cfg.factor
+        out = bin_mask.astype(np.uint8)
+        if s & (s - 1) == 0 and s > 1:
+            while s > 1:
+                out = cv2.pyrDown(out)
+                s //= 2
+            out = (out > 0).astype(np.uint8)
+            if cfg.close_diagonals:
+                kernel = np.ones((3, 3), np.uint8)
+                out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
+            return out
 
     if cfg.method == "skeleton_bresenham":
         skel = _skeletonize_binary(bin_mask)
@@ -289,6 +330,39 @@ def downsample_preserve_connectivity(mask: np.ndarray, cfg: DownsampleConfig) ->
 
     else:
         raise ValueError(f"Unknown method: {cfg.method}")
+
+
+def downsample_batch(
+    masks: Sequence[np.ndarray],
+    factor: int,
+    method: str = "area",
+    threshold: float = 0.0,
+    close_diagonals: bool = True,
+    max_workers: int = 0,
+) -> List[np.ndarray]:
+    """Downsample a batch of binary masks in parallel.
+
+    Args:
+        masks: Sequence of HxW binary arrays.
+        factor: Integer downsample factor.
+        method: One of 'area', 'maxpool', 'pyrdown', 'skeleton_bresenham', 'gaussian_maxpool'.
+        threshold: Threshold used by some methods.
+        close_diagonals: Apply small 3x3 closing to keep 8-connectivity.
+        max_workers: If > 0, use ThreadPool with this number of workers.
+
+    Returns:
+        List of downsampled binary masks.
+    """
+    cfg = DownsampleConfig(factor=factor, method=method, threshold=threshold, close_diagonals=close_diagonals)
+
+    def _run(m):
+        return downsample_preserve_connectivity(m, cfg)
+
+    if max_workers and max_workers > 0:
+        with futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            return list(ex.map(_run, masks))
+    else:
+        return [ _run(m) for m in masks ]
 
 
 def connected_components_count(bin_img: np.ndarray, connectivity: int = 2) -> int:

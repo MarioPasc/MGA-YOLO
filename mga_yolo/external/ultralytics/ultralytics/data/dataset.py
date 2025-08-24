@@ -300,24 +300,84 @@ class YOLODataset(BaseDataset):
 
     @staticmethod
     def _downsample_mask(mask: np.ndarray, stride: int) -> np.ndarray:
-        # Fast-path override via env var for CI/tests
-        method_override = os.getenv("MGA_MASK_METHOD", "").lower()
-        if method_override == "nearest":
-            if stride <= 1:
-                return mask
-            h, w = mask.shape
-            nh, nw = math.ceil(h / stride), math.ceil(w / stride)
-            return cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
+        """Downsample a binary mask by stride using configurable methods.
 
-        if downsample_preserve_connectivity and DownsampleConfig:
-            try:
-                return downsample_preserve_connectivity(mask, DownsampleConfig(factor=stride, method="skeleton_bresenham"))
-            except Exception as e:  # pragma: no cover
-                LOGGER.debug(f"Connectivity-preserving downsample failed (stride={stride}): {e}; falling back to NEAREST")
+        Env MGA_MASK_METHOD controls algorithm:
+          - 'nearest'  : super fast but low quality (for CI/smoke)
+          - 'area'     : fast high-quality (INTER_AREA + >0 + optional close)
+          - 'maxpool'  : block-wise max pooling
+          - 'pyrdown'  : repeated pyrDown (power-of-two strides)
+          - otherwise  : use connectivity-preserving utility (skeleton_bresenham)
+        Env MGA_MASK_BRIDGE=0 disables 3x3 closing bridge (default on)
+        Env MGA_MASK_THRESH sets threshold for 'area' method (default 0.0, i.e., >0)
+        """
+        method = os.getenv("MGA_MASK_METHOD", "skeleton_bresenham").lower()
+        bridge = os.getenv("MGA_MASK_BRIDGE", "1") not in {"0", "false", "False"}
+        thresh = float(os.getenv("MGA_MASK_THRESH", "0.0"))
+
+        # unify dtype to uint8 binary {0,1}
+        if mask.dtype != np.uint8:
+            mask = (mask > 0).astype(np.uint8)
+
         if stride <= 1:
             return mask
+
         h, w = mask.shape
         nh, nw = math.ceil(h / stride), math.ceil(w / stride)
+
+        if method == "nearest":
+            return cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
+
+        if method == "area":
+            small = cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_AREA)
+            out = (small > thresh).astype(np.uint8)
+            if bridge:
+                kernel = np.ones((3, 3), np.uint8)
+                out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
+            return out
+
+        if method == "maxpool":
+            pad_h = (stride - (h % stride)) % stride
+            pad_w = (stride - (w % stride)) % stride
+            if pad_h or pad_w:
+                mask_pad = np.pad(mask, ((0, pad_h), (0, pad_w)), mode="constant", constant_values=0)
+            else:
+                mask_pad = mask
+            H2, W2 = mask_pad.shape
+            view = mask_pad.reshape(H2 // stride, stride, W2 // stride, stride)
+            return view.max(axis=(1, 3)).astype(np.uint8)
+
+        if method == "pyrdown":
+            s = stride
+            out = mask.copy()
+            # only valid if stride is power of two; otherwise fall back
+            if s & (s - 1) == 0:
+                while s > 1:
+                    out = cv2.pyrDown(out)
+                    s //= 2
+                out = (out > 0).astype(np.uint8)
+                if bridge:
+                    kernel = np.ones((3, 3), np.uint8)
+                    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
+                return out
+
+        # Default/fallback: call connectivity-preserving utility
+        if downsample_preserve_connectivity and DownsampleConfig:
+            try:
+                return downsample_preserve_connectivity(
+                    mask,
+                    DownsampleConfig(
+                        factor=stride,
+                        method="skeleton_bresenham",
+                        threshold=thresh if thresh > 0 else 0.2,
+                        close_diagonals=bridge,
+                    ),
+                )
+            except Exception as e:  # pragma: no cover
+                LOGGER.debug(
+                    f"Connectivity-preserving downsample failed (stride={stride}, method={method}): {e}; using INTER_NEAREST"
+                )
+
         return cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
@@ -333,10 +393,30 @@ class YOLODataset(BaseDataset):
                 raw = cv2.imread(mask_path.as_posix(), cv2.IMREAD_GRAYSCALE)
                 if raw is not None:
                     bin_mask = (raw > 0).astype(np.uint8)
-                    # Derive strides for P3,P4,P5 (assume strides 8,16,32 typical YOLO)
+                    # Optional on-disk cache per (file, stride, mtime, method)
+                    use_cache = os.getenv("MGA_MASK_CACHE", "1") not in {"0", "false", "False"}
+                    method = os.getenv("MGA_MASK_METHOD", "skeleton_bresenham").lower()
+                    mtime = int(mask_path.stat().st_mtime)
+                    cache_dir = mask_path.parent / ".mga_mask_cache" / method
+                    if use_cache:
+                        cache_dir.mkdir(parents=True, exist_ok=True)
                     for s in (8, 16, 32):
-                        ds = self._downsample_mask(bin_mask, s)
-                        multi_masks.append(torch.from_numpy(ds[None, ...].astype(np.float32)))  # (1,Hs,Ws)
+                        ds_np = None
+                        if use_cache:
+                            cpath = cache_dir / f"{mask_path.stem}_f{s}_{mtime}.npy"
+                            if cpath.exists():
+                                try:
+                                    ds_np = np.load(cpath.as_posix())
+                                except Exception:
+                                    ds_np = None
+                        if ds_np is None:
+                            ds_np = self._downsample_mask(bin_mask, s)
+                            if use_cache:
+                                try:
+                                    np.save(cpath.as_posix(), ds_np, allow_pickle=False)
+                                except Exception:
+                                    pass
+                        multi_masks.append(torch.from_numpy(ds_np[None, ...].astype(np.float32)))  # (1,Hs,Ws)
             except Exception as e:  # pragma: no cover
                 LOGGER.debug(f"Mask load failed for {mask_path}: {e}")
         if multi_masks:
