@@ -5,6 +5,7 @@ from collections import defaultdict
 from itertools import repeat
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
+import os
 from typing import Any, Dict, List, Optional, Tuple
 import math
 
@@ -299,6 +300,15 @@ class YOLODataset(BaseDataset):
 
     @staticmethod
     def _downsample_mask(mask: np.ndarray, stride: int) -> np.ndarray:
+        # Fast-path override via env var for CI/tests
+        method_override = os.getenv("MGA_MASK_METHOD", "").lower()
+        if method_override == "nearest":
+            if stride <= 1:
+                return mask
+            h, w = mask.shape
+            nh, nw = math.ceil(h / stride), math.ceil(w / stride)
+            return cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
+
         if downsample_preserve_connectivity and DownsampleConfig:
             try:
                 return downsample_preserve_connectivity(mask, DownsampleConfig(factor=stride, method="skeleton_bresenham"))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple, Union
+from types import SimpleNamespace
 
 import torch
 from torch import Tensor, nn
@@ -8,6 +9,8 @@ from torch import Tensor, nn
 from mga_yolo.external.ultralytics.ultralytics.nn.tasks import DetectionModel
 from mga_yolo.external.ultralytics.ultralytics.nn.modules import Detect
 from mga_yolo.nn.modules.seg import MGAMaskHead
+from mga_yolo.nn.losses.segmentation import SegmentationLoss, SegLossConfig
+from mga_yolo.external.ultralytics.ultralytics.utils.loss import v8DetectionLoss
 
 class MGAModel(DetectionModel):
     """DetectionModel extension that returns dict with detection + multi-scale mask logits.
@@ -40,7 +43,7 @@ class MGAModel(DetectionModel):
 
     # --- Core override ---
     def _predict_once(self, x: Tensor, profile: bool = False, visualize: bool = False, embed=None):  # type: ignore[override]
-        from ultralytics.utils.plotting import feature_visualization  # local import for optional dependency
+        from mga_yolo.external.ultralytics.ultralytics.utils.plotting import feature_visualization  # local import for optional dependency
         seg_outs: Dict[str, Tensor] = {}
         y: List[Any] = []  # saved outputs (None for non-saved layers)
         dt = []  # profile timings (ignored unless profile=True)
@@ -67,3 +70,52 @@ class MGAModel(DetectionModel):
         if self.return_dict:
             return {"det": x, "seg": seg_outs}
         return x
+
+    # --- Loss override to integrate detection + segmentation during Ultralytics training loop ---
+    def _ensure_criteria(self):
+        if not hasattr(self, "det_criterion") or self.det_criterion is None:
+            # Base detection loss (v8)
+            self.det_criterion = v8DetectionLoss(self)
+        if not hasattr(self, "seg_criterion") or self.seg_criterion is None:
+            # Build seg loss from model.args if available
+            a = getattr(self, "args", SimpleNamespace())
+            seg_cfg = SegLossConfig(
+                bce_weight=getattr(a, "seg_bce_weight", 1.0),
+                dice_weight=getattr(a, "seg_dice_weight", 1.0),
+                scale_weights=getattr(a, "seg_scale_weights", [1.0, 1.0, 1.0]),
+                smooth=getattr(a, "seg_smooth", 1.0),
+                loss_lambda=getattr(a, "seg_loss_lambda", 1.0),
+                enabled=getattr(a, "seg_enable", True),
+            )
+            self.seg_criterion = SegmentationLoss(seg_cfg)
+
+    def loss(self, batch, preds=None):  # type: ignore[override]
+        """Compute combined detection + segmentation loss and return (loss, loss_items)."""
+        self._ensure_criteria()
+        img = batch["img"]
+        preds = self.predict(img) if preds is None else preds
+        # Split predictions
+        if isinstance(preds, dict):
+            det_preds = preds.get("det")
+            seg_preds = preds.get("seg", {})
+        else:
+            det_preds, seg_preds = preds, {}
+
+        # Detection loss
+        det_loss, det_items = self.det_criterion(det_preds, batch)
+
+        # Segmentation loss
+        seg_total = det_loss.new_zeros(())
+        seg_logs: Dict[str, float] = {}
+        if isinstance(seg_preds, dict) and seg_preds and batch.get("masks_multi"):
+            seg_total, seg_logs = self.seg_criterion(seg_preds, batch["masks_multi"])  # type: ignore[arg-type]
+
+        total = det_loss + seg_total
+
+        # Compose loss_items aligned with MGATrainer.loss_names
+        li: List[float] = det_items.detach().cpu().tolist() if hasattr(det_items, "tolist") else list(det_items)
+        for key in ["p3_bce", "p3_dice", "p4_bce", "p4_dice", "p5_bce", "p5_dice"]:
+            li.append(float(seg_logs.get(key, 0.0)))
+        li.append(float(seg_logs.get("seg_total", float(seg_total.detach().cpu()))))
+        loss_items = torch.as_tensor(li, device=total.device)
+        return total, loss_items

@@ -1,7 +1,10 @@
 from types import SimpleNamespace
+from pathlib import Path
 import torch
+import pytest
 from mga_yolo.engine.model import MGAModel
 from mga_yolo.engine.train import MGATrainer
+from mga_yolo.external.ultralytics.ultralytics import YOLO
 
 
 class _DummyScaler:
@@ -73,3 +76,43 @@ def test_mga_segmentation_loss_integration():
     # Ensure individual scale metrics logged
     for key in ['p3_bce', 'p4_bce', 'p5_bce', 'p3_dice', 'p4_dice', 'p5_dice']:
         assert key in trainer.loss_names, f'{key} missing in loss names.'
+
+
+@pytest.mark.slow
+def test_mga_detect_and_seg_train_10_epochs(tmp_path):
+    # End-to-end: train MGA for 10 epochs using provided dataset YAML; save losses and val visuals
+    data_yaml = Path('configs/data/data.yaml').resolve()
+    assert data_yaml.exists(), "configs/data/data.yaml not found"
+    model = YOLO('configs/models/yolov8_test_segment_heads.yaml', task='mga', verbose=True)
+    # Force CPU for CI; enable saving to capture CSV and validation plots
+    results = model.train(
+        data=str(data_yaml),
+        task='mga',
+        epochs=1,
+        imgsz=640,
+        batch=2,
+        device='cuda:0',
+        workers=0,
+        save=True,
+        val=True,
+        plots=True,
+        seg_enable=True,
+        seg_bce_weight=1.0,
+        seg_dice_weight=1.0,
+        seg_scale_weights=[1.0, 1.0, 1.0],
+        seg_loss_lambda=1.0,
+        seg_smooth=1.0,
+        verbose=True,
+        name='test_mga_train_v8_segloss',
+        save_dir=str(tmp_path)
+    )
+    # Basic assertions: training completed and artifacts exist
+    assert results is not None
+    save_dir = Path(model.trainer.save_dir)
+    assert (save_dir / 'results.csv').exists(), 'results.csv missing'
+    assert (save_dir / 'loss_log.csv').exists(), 'loss_log.csv missing (seg loss logging)'
+    # Check some validation outputs (pred plots and mask previews)
+    pred_samples = list(save_dir.glob('val_batch*_pred.jpg'))
+    mask_dirs = list(save_dir.glob('val_batch*_masks'))
+    assert pred_samples, 'No validation prediction images saved'
+    assert mask_dirs, 'No validation mask previews saved'

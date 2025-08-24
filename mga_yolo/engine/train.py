@@ -1,8 +1,9 @@
 from __future__ import annotations
-from typing import Any, Dict
+from typing import Any, Dict, List
 import torch
 
 from mga_yolo.external.ultralytics.ultralytics.models.yolo.detect.train import DetectionTrainer
+from mga_yolo.external.ultralytics.ultralytics.utils import LOGGER, RANK
 
 from mga_yolo.nn.losses.segmentation import SegmentationLoss, SegLossConfig
 
@@ -17,6 +18,14 @@ class MGATrainer(DetectionTrainer):
         super().set_model_attributes()
         if not hasattr(self, "seg_loss"):
             self.init_losses()
+        # Lightweight console feedback about MGA specifics
+        try:
+            m = getattr(self, "model", None)
+            mask_info: List[int] = getattr(m, "mga_mask_indices", []) or []
+            if mask_info:
+                LOGGER.info(f"[MGA] Detected MGAMaskHead layers at indices: {mask_info}")
+        except Exception:
+            pass
 
     def init_losses(self) -> None:
         """
@@ -35,6 +44,19 @@ class MGATrainer(DetectionTrainer):
             enabled=getattr(args, "seg_enable", True),
         )
         self.seg_loss = SegmentationLoss(seg_cfg)
+        # Console feedback on segmentation loss configuration
+        try:
+            LOGGER.info(
+                "[MGA] SegmentationLoss configured: enabled=%s, bce=%.3f, dice=%.3f, lambda=%.3f, smooth=%.3f, scale_weights=%s",
+                seg_cfg.enabled,
+                seg_cfg.bce_weight,
+                seg_cfg.dice_weight,
+                seg_cfg.loss_lambda,
+                seg_cfg.smooth,
+                list(seg_cfg.scale_weights),
+            )
+        except Exception:
+            pass
 
         # Extend loss names for logging (order matters)
         base_names = getattr(self, "loss_names", ["box", "cls", "dfl"])
@@ -49,11 +71,29 @@ class MGATrainer(DetectionTrainer):
         """Dataset building unchanged, just delegate."""
         return super().build_dataset(img_path, mode, batch)
 
+    def get_model(self, cfg: str | None = None, weights: str | None = None, verbose: bool = True):  # type: ignore[override]
+        """Return an MGAModel so forward outputs include segmentation logits for training/val."""
+        from mga_yolo.engine.model import MGAModel
+        nc = self.data["nc"]
+        ch = self.data["channels"]
+        model = MGAModel(cfg or self.args.model, nc=nc, ch=ch, verbose=verbose and RANK == -1)
+        if weights:
+            model.load(weights)
+        return model
+
     def preprocess_batch(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         batch = super().preprocess_batch(batch)
-        # Ensure masks_multi exists (or empty list fallback)
+        # Ensure masks_multi exists and move to device for seg loss
         if "masks_multi" not in batch:
             batch["masks_multi"] = []
+        else:
+            moved = []
+            for t in batch["masks_multi"]:
+                try:
+                    moved.append(t.to(self.device, non_blocking=True).float())
+                except Exception:
+                    moved.append(t.float())
+            batch["masks_multi"] = moved
         return batch
     
     def criterion(self, preds, batch):  # overrides DetectionTrainer.criterion
@@ -103,8 +143,12 @@ class MGATrainer(DetectionTrainer):
         return loss
 
     def get_validator(self):
-        """Use parent validator (it will ignore extra seg outputs)."""
-        return super().get_validator()
+        """Return MGAValidator for validation so we can also save masks/boxes."""
+        from .val import MGAValidator
+        # Ensure base loss names exist for val logging
+        if not hasattr(self, "loss_names") or not self.loss_names:
+            self.loss_names = ("box_loss", "cls_loss", "dfl_loss")
+        return MGAValidator(self.test_loader, save_dir=self.save_dir, args=self.args, _callbacks=self.callbacks)
 
     def resume_training(self, ckpt):
         super().resume_training(ckpt)
@@ -114,11 +158,66 @@ class MGATrainer(DetectionTrainer):
 
     # Disable checkpoint serialization if save flag is False (useful for unit tests)
     def save_model(self):  # type: ignore[override]
-        if not getattr(self.args, 'save', True):
+        # Sanitize non-picklable attributes before saving; fall back to skipping on error.
+        try:
+            if not getattr(self.args, 'save', True):
+                return
+            # Convert model/EMA .args to plain dict to avoid cross-module SimpleNamespace pickling issues
+            def _sanitize_args(m):
+                if m is None:
+                    return
+                try:
+                    if hasattr(m, 'args') and not isinstance(m.args, dict):
+                        m.args = dict(getattr(m.args, '__dict__', {}))
+                except Exception:
+                    try:
+                        m.args = {}
+                    except Exception:
+                        pass
+
+            ema_model = getattr(getattr(self, 'ema', None), 'ema', None)
+            _sanitize_args(ema_model)
+            _sanitize_args(getattr(self, 'model', None))
+            return super().save_model()
+        except Exception as e:
+            try:
+                LOGGER.warning(f"[MGA] Skipping checkpoint save due to error: {e}")
+            except Exception:
+                pass
             return
-        return super().save_model()
 
     # --- Logging extensions -------------------------------------------------
+    def save_metrics(self, metrics):  # type: ignore[override]
+        """Persist Ultralytics results.csv then append our per-epoch MGA loss breakdown to loss_log.csv."""
+        super().save_metrics(metrics)
+        try:
+            if not getattr(self.args, 'save', True):
+                return
+            if not hasattr(self, 'loss_names') or self.tloss is None:
+                return
+            import csv
+            from pathlib import Path
+            save_dir = Path(getattr(self, 'save_dir', '.'))
+            csv_path = save_dir / 'loss_log.csv'
+            header = ['epoch'] + list(self.loss_names)
+            # tloss is the running mean of self.loss_items across the epoch
+            vals = self.tloss.detach().cpu().tolist() if hasattr(self.tloss, 'detach') else list(self.tloss)
+            # Ensure list length matches header-1; pad or trim defensively
+            if isinstance(vals, (int, float)):
+                vals = [float(vals)]
+            if len(vals) < len(self.loss_names):
+                vals = list(vals) + [0.0] * (len(self.loss_names) - len(vals))
+            if len(vals) > len(self.loss_names):
+                vals = vals[: len(self.loss_names)]
+            row = [self.epoch + 1] + [float(x) for x in vals]
+            write_header = not csv_path.exists()
+            with csv_path.open('a', newline='') as f:
+                w = csv.writer(f)
+                if write_header:
+                    w.writerow(header)
+                w.writerow(row)
+        except Exception:
+            pass  # non-critical
     def _log_losses_csv(self) -> None:
         """Append current loss_items tensor (aligned to self.loss_names) to a CSV file under save_dir."""
         try:
@@ -144,3 +243,14 @@ class MGATrainer(DetectionTrainer):
     def after_epoch(self):  # type: ignore[override]
         super().after_epoch()
         self._log_losses_csv()
+
+    # Match Ultralytics API: print a richer header including our extra loss names
+    def progress_string(self) -> str:  # type: ignore[override]
+        names = tuple(self.loss_names) if hasattr(self, "loss_names") else ("box_loss", "cls_loss", "dfl_loss")
+        return ("\n" + "%11s" * (4 + len(names))) % (
+            "Epoch",
+            "GPU_mem",
+            *names,
+            "Instances",
+            "Size",
+        )

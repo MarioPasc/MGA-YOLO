@@ -761,6 +761,21 @@ DEFAULT_CFG_DICT = YAML.load(DEFAULT_CFG_PATH)
 DEFAULT_CFG_KEYS = DEFAULT_CFG_DICT.keys()
 DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
 
+# --- MGA extension: allow custom segmentation loss args in trainer overrides ---
+# These keys are read by MGATrainer.init_losses; adding them here makes them valid YOLO args.
+DEFAULT_CFG_DICT.update(
+    {
+        "seg_enable": True,
+        "seg_bce_weight": 1.0,
+        "seg_dice_weight": 1.0,
+        "seg_scale_weights": [1.0, 1.0, 1.0],
+        "seg_loss_lambda": 1.0,
+        "seg_smooth": 1.0,
+    }
+)
+DEFAULT_CFG_KEYS = DEFAULT_CFG_DICT.keys()
+DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
+
 
 def read_device_model() -> str:
     """

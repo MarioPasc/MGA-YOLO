@@ -807,8 +807,12 @@ class Model(torch.nn.Module):
         if RANK in {-1, 0}:
             if args.get("save", True):
                 ckpt = self.trainer.best if self.trainer.best.exists() else self.trainer.last
-                self.model, self.ckpt = attempt_load_one_weight(ckpt)
-                self.overrides = self.model.args
+                if ckpt.exists():
+                    self.model, self.ckpt = attempt_load_one_weight(ckpt)
+                    self.overrides = self.model.args
+                else:
+                    from ultralytics.utils import LOGGER
+                    LOGGER.warning(f"No checkpoint found at {ckpt}, skipping model reload post-train.")
                 self.metrics = getattr(self.trainer.validator, "metrics", None)  # TODO: no metrics returned by DDP
             else:
                 # When not saving, retain current model and basic metrics if validator ran
