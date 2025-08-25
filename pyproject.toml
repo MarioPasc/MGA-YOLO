@@ -54,3 +54,6 @@ ultralytics = "mga_yolo/external/ultralytics/ultralytics"
 [tool.setuptools.package-data]
 "mga_yolo.external.ultralytics" = ["*"]
 "ultralytics" = ["*"]
+
+[project.scripts]
+mga-ckpt = "cli.mga_ckpt:main"

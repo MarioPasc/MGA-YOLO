@@ -809,12 +809,25 @@ class Model(torch.nn.Module):
                 ckpt = self.trainer.best if self.trainer.best.exists() else self.trainer.last
                 if ckpt.exists():
                     try:
+                        from ultralytics.utils.torch_utils import attempt_load_one_weight  # type: ignore
                         self.model, self.ckpt = attempt_load_one_weight(ckpt)
                         # self.model.args may be a plain dict in our minimal checkpoint path
                         self.overrides = getattr(self.model, "args", self.overrides)
-                    except Exception:
-                        from ultralytics.utils import LOGGER
-                        LOGGER.warning(f"Reloading checkpoint {ckpt} failed; keeping in-memory model.")
+                    except Exception as _primary_e:
+                        # Try MGA minimal checkpoint fallback (ema_state_dict/model_state_dict only)
+                        try:
+                            from mga_yolo.engine.checkpoint import rebuild_mga_model_from_minimal_ckpt
+                            # Use current model.yaml as topology reference
+                            yaml_path = getattr(self.model, "yaml", None) or getattr(self.trainer.model, "yaml", None)
+                            if yaml_path is None:
+                                raise RuntimeError("No YAML path available on model to rebuild minimal checkpoint.")
+                            from ultralytics.utils import LOGGER as _ULOGGER
+                            _ULOGGER.info(f"[MGA] Falling back to minimal checkpoint loader for {ckpt} using {yaml_path}")
+                            self.model, self.ckpt = rebuild_mga_model_from_minimal_ckpt(ckpt, yaml_path)
+                            self.overrides = getattr(self.model, "args", self.overrides)
+                        except Exception as _fallback_e:
+                            from ultralytics.utils import LOGGER
+                            LOGGER.warning(f"Reloading checkpoint {ckpt} failed; keeping in-memory model. Primary: {_primary_e}; Fallback: {_fallback_e}")
                 else:
                     from ultralytics.utils import LOGGER
                     LOGGER.warning(f"No checkpoint found at {ckpt}, skipping model reload post-train.")
