@@ -156,29 +156,79 @@ class MGATrainer(DetectionTrainer):
         if not hasattr(self, "seg_loss"):
             self.init_losses()
 
-    # Disable checkpoint serialization if save flag is False (useful for unit tests)
+    # Replace checkpoint serialization with a minimal, pickle-safe writer (state_dict-only)
     def save_model(self):  # type: ignore[override]
-        # Sanitize non-picklable attributes before saving; fall back to skipping on error.
         try:
-            if not getattr(self.args, 'save', True):
+            if not getattr(self.args, "save", True):
                 return
-            # Convert model/EMA .args to plain dict to avoid cross-module SimpleNamespace pickling issues
-            def _sanitize_args(m):
-                if m is None:
-                    return
-                try:
-                    if hasattr(m, 'args') and not isinstance(m.args, dict):
-                        m.args = dict(getattr(m.args, '__dict__', {}))
-                except Exception:
-                    try:
-                        m.args = {}
-                    except Exception:
-                        pass
+            # Helper to recursively sanitize objects for pickle/torch.save
+            from types import SimpleNamespace
+            import pathlib
+            import numbers
 
-            ema_model = getattr(getattr(self, 'ema', None), 'ema', None)
-            _sanitize_args(ema_model)
-            _sanitize_args(getattr(self, 'model', None))
-            return super().save_model()
+            def _sanitize(obj: Any) -> Any:
+                # Primitives and None
+                if obj is None or isinstance(obj, (str, bool, int, float)):
+                    return obj
+                # Numeric types (numpy) fallback
+                if isinstance(obj, numbers.Number):
+                    return float(obj)
+                # Paths -> str
+                if isinstance(obj, (pathlib.Path, )):
+                    return str(obj)
+                # Tensors/state dicts are fine as-is (torch handles pickling)
+                if isinstance(obj, torch.Tensor):
+                    return obj
+                # SimpleNamespace / IterableSimpleNamespace -> dict
+                if isinstance(obj, SimpleNamespace):
+                    return {k: _sanitize(v) for k, v in vars(obj).items()}
+                # Dicts
+                if isinstance(obj, dict):
+                    return {str(k): _sanitize(v) for k, v in obj.items()}
+                # Sequences
+                if isinstance(obj, (list, tuple, set)):
+                    t = type(obj)
+                    seq = [_sanitize(v) for v in obj]
+                    return seq if t is list else (tuple(seq) if t is tuple else list(seq))
+                # Fallback to string to avoid pickling custom classes
+                try:
+                    return str(obj)
+                except Exception:
+                    return None
+            # Build a torch.save-compatible checkpoint so downstream tools can load it
+            from copy import deepcopy
+            from mga_yolo.external.ultralytics.ultralytics.utils.torch_utils import convert_optimizer_state_dict_to_fp16
+            import io, torch as _torch
+
+            # Build a minimal tensor-only checkpoint (no model objects)
+            ema_sd = None
+            if getattr(self, "ema", None) is not None and getattr(self.ema, "ema", None) is not None:
+                try:
+                    ema_sd = deepcopy(self.ema.ema).half().state_dict()
+                except Exception:
+                    ema_sd = None
+
+            ckpt = {
+                "epoch": int(self.epoch),
+                "best_fitness": float(self.best_fitness or 0.0),
+                "model": None,
+                "ema": None,
+                "ema_state_dict": ema_sd,
+                "model_state_dict": (deepcopy(self.model).float().state_dict() if getattr(self, "model", None) else None),
+                "updates": int(getattr(self.ema, "updates", 0)) if getattr(self, "ema", None) else 0,
+                "optimizer": None,
+                "train_args": _sanitize(vars(self.args)),
+                "train_metrics": _sanitize(self.metrics or {}),
+            }
+
+            buffer = io.BytesIO()
+            _torch.save(ckpt, buffer)
+            data = buffer.getvalue()
+            self.last.write_bytes(data)
+            if self.best_fitness is None or self.best_fitness == ckpt["best_fitness"]:
+                self.best.write_bytes(data)
+            if (self.save_period > 0) and (self.epoch % self.save_period == 0):
+                (self.wdir / f"epoch{self.epoch}.pt").write_bytes(data)
         except Exception as e:
             try:
                 LOGGER.warning(f"[MGA] Skipping checkpoint save due to error: {e}")
@@ -254,3 +304,21 @@ class MGATrainer(DetectionTrainer):
             "Instances",
             "Size",
         )
+
+    def final_eval(self):  # type: ignore[override]
+        """Run final evaluation using the in-memory model to avoid checkpoint dependency."""
+        try:
+            model = self.ema.ema if getattr(self, "ema", None) and getattr(self.ema, "ema", None) is not None else self.model
+            if model is None or self.validator is None:
+                return
+            self.validator.args.plots = getattr(self.args, "plots", False)
+            self.metrics = self.validator(model=model)
+            # Align with Ultralytics: drop 'fitness' if present and trigger callback
+            if isinstance(self.metrics, dict):
+                self.metrics.pop("fitness", None)
+            self.run_callbacks("on_fit_epoch_end")
+        except Exception as e:
+            try:
+                LOGGER.warning(f"[MGA] final_eval failed: {e}")
+            except Exception:
+                pass

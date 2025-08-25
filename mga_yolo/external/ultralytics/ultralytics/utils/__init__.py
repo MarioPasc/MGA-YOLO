@@ -572,7 +572,16 @@ def set_logging(name="LOGGING_NAME", verbose=True):
     # Set up the logger
     logger = logging.getLogger(name)
     logger.setLevel(level)
-    logger.addHandler(stream_handler)
+    # Avoid duplicate StreamHandlers if set_logging is invoked multiple times across aliasing imports
+    has_stream = any(isinstance(h, logging.StreamHandler) for h in logger.handlers)
+    if not has_stream:
+        logger.addHandler(stream_handler)
+    else:
+        # Update existing stream handlers to desired level/formatter
+        for h in logger.handlers:
+            if isinstance(h, logging.StreamHandler):
+                h.setLevel(level)
+                h.setFormatter(formatter)
     logger.propagate = False
     return logger
 

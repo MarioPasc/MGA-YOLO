@@ -808,8 +808,13 @@ class Model(torch.nn.Module):
             if args.get("save", True):
                 ckpt = self.trainer.best if self.trainer.best.exists() else self.trainer.last
                 if ckpt.exists():
-                    self.model, self.ckpt = attempt_load_one_weight(ckpt)
-                    self.overrides = self.model.args
+                    try:
+                        self.model, self.ckpt = attempt_load_one_weight(ckpt)
+                        # self.model.args may be a plain dict in our minimal checkpoint path
+                        self.overrides = getattr(self.model, "args", self.overrides)
+                    except Exception:
+                        from ultralytics.utils import LOGGER
+                        LOGGER.warning(f"Reloading checkpoint {ckpt} failed; keeping in-memory model.")
                 else:
                     from ultralytics.utils import LOGGER
                     LOGGER.warning(f"No checkpoint found at {ckpt}, skipping model reload post-train.")

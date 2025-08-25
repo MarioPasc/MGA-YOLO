@@ -85,13 +85,15 @@ def test_mga_detect_and_seg_train_10_epochs(tmp_path):
     assert data_yaml.exists(), "configs/data/data.yaml not found"
     model = YOLO('configs/models/yolov8_test_segment_heads.yaml', task='mga', verbose=True)
     # Force CPU for CI; enable saving to capture CSV and validation plots
+    # Pick device dynamically: prefer CUDA if available
+    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     results = model.train(
         data=str(data_yaml),
         task='mga',
-        epochs=1,
+        epochs=10,
         imgsz=640,
         batch=2,
-        device='cuda:0',
+    device=device,
         workers=0,
         save=True,
         val=True,
@@ -125,6 +127,8 @@ def test_mga_detect_and_seg_train_10_epochs(tmp_path):
         erasing=0.0
     )
     # Basic assertions: training completed and artifacts exist
+    import time
+    time.sleep(0.5)  # give I/O a moment
     assert results is not None
     save_dir = Path(model.trainer.save_dir)
     assert (save_dir / 'results.csv').exists(), 'results.csv missing'
