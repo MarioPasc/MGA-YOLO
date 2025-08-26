@@ -171,10 +171,22 @@ class DetectionTrainer(BaseTrainer):
 
     def progress_string(self):
         """Return a formatted string of training progress with epoch, GPU memory, loss, instances and size."""
-        return ("\n" + "%11s" * (4 + len(self.loss_names))) % (
+        # If MGA-style segmentation losses are present, show only det/total and seg/total to keep summary concise
+        names = list(self.loss_names)
+        if isinstance(names, (list, tuple)) and "seg_total" in names:
+            header = ("\n" + "%11s" * 6) % (
+                "Epoch",
+                "GPU_mem",
+                "det/total",
+                "seg/total",
+                "Instances",
+                "Size",
+            )
+            return header
+        return ("\n" + "%11s" * (4 + len(names))) % (
             "Epoch",
             "GPU_mem",
-            *self.loss_names,
+            *names,
             "Instances",
             "Size",
         )

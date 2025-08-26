@@ -57,9 +57,9 @@ class MGATrainer(DetectionTrainer):
             )
         except Exception:
             pass
-
         # Extend loss names for logging (order matters)
-        base_names = getattr(self, "loss_names", ["box", "cls", "dfl"])
+        # Force canonical detection names to align with MGAModel.loss items: [box, cls, dfl]
+        base_names = ["box", "cls", "dfl"]
         extra_names = ["p3_bce", "p3_dice", "p4_bce", "p4_dice", "p5_bce", "p5_dice", "seg_total"]
         # Avoid duplicates if re-init
         for n in extra_names:
@@ -238,57 +238,76 @@ class MGATrainer(DetectionTrainer):
 
     # --- Logging extensions -------------------------------------------------
     def save_metrics(self, metrics):  # type: ignore[override]
-        """Persist Ultralytics results.csv then append our per-epoch MGA loss breakdown to loss_log.csv."""
-        super().save_metrics(metrics)
+        """
+        Write ONE file: results.csv, containing:
+        - epoch number
+        - TRAIN losses: train/det/{total,box,dfl,cls}, train/seg/{total,p3_bce,p3_dice,p4_bce,p4_dice,p5_bce,p5_dice}
+        - VAL losses  : val/det/{total,box,dfl,cls},   val/seg/{total,p3_bce,p3_dice,p4_bce,p4_dice,p5_bce,p5_dice}
+        - Plus any additional keys from `metrics` (e.g., precision/recall/mAP, learning rates), preserved as-is.
+        """
+        # Build the row
+        row: Dict[str, float] = {"epoch": float(self.epoch + 1)}
+
+        # TRAIN epoch means from tloss/loss_names
+        row.update(self._collect_train_epoch_losses())
+
+        # VAL epoch metrics returned by validator
+        if isinstance(metrics, dict):
+            row.update(self._collect_val_epoch_losses(metrics))
+            # Also preserve any additional metrics the validator produced (e.g., 'metrics/mAP50(B)')
+            # without overwriting our keys.
+            for k, v in metrics.items():
+                if k not in row:
+                    try:
+                        row[k] = float(v)
+                    except Exception:
+                        # keep only numeric values in results.csv
+                        continue
+
+        # Write results.csv (append; create header on first write)
         try:
-            if not getattr(self.args, 'save', True):
-                return
-            if not hasattr(self, 'loss_names') or self.tloss is None:
-                return
             import csv
             from pathlib import Path
-            save_dir = Path(getattr(self, 'save_dir', '.'))
-            csv_path = save_dir / 'loss_log.csv'
-            header = ['epoch'] + list(self.loss_names)
-            # tloss is the running mean of self.loss_items across the epoch
-            vals = self.tloss.detach().cpu().tolist() if hasattr(self.tloss, 'detach') else list(self.tloss)
-            # Ensure list length matches header-1; pad or trim defensively
-            if isinstance(vals, (int, float)):
-                vals = [float(vals)]
-            if len(vals) < len(self.loss_names):
-                vals = list(vals) + [0.0] * (len(self.loss_names) - len(vals))
-            if len(vals) > len(self.loss_names):
-                vals = vals[: len(self.loss_names)]
-            row = [self.epoch + 1] + [float(x) for x in vals]
+            save_dir = Path(getattr(self, "save_dir", "."))
+            csv_path = save_dir / "results.csv"
+
+            # Stable header order: epoch, TRAIN..., VAL..., then any extra metrics (sorted for determinism)
+            train_keys = [
+                "train/det/total", "train/det/box", "train/det/dfl", "train/det/cls",
+                "train/seg/total",
+                "train/seg/p3_bce", "train/seg/p3_dice",
+                "train/seg/p4_bce", "train/seg/p4_dice",
+                "train/seg/p5_bce", "train/seg/p5_dice",
+            ]
+            val_keys = [
+                "val/det/total", "val/det/box", "val/det/dfl", "val/det/cls",
+                "val/seg/total",
+                "val/seg/p3_bce", "val/seg/p3_dice",
+                "val/seg/p4_bce", "val/seg/p4_dice",
+                "val/seg/p5_bce", "val/seg/p5_dice",
+            ]
+            fixed = ["epoch"] + train_keys + val_keys
+            extras = [k for k in row.keys() if k not in fixed]
+            header = fixed + sorted(extras)
+
             write_header = not csv_path.exists()
-            with csv_path.open('a', newline='') as f:
-                w = csv.writer(f)
+            with csv_path.open("a", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=header, extrasaction="ignore")
                 if write_header:
-                    w.writerow(header)
-                w.writerow(row)
-        except Exception:
-            pass  # non-critical
+                    w.writeheader()
+                # Ensure all header fields exist in row (fill missing with 0.0)
+                complete_row = {h: row.get(h, 0.0) for h in header}
+                w.writerow(complete_row)
+        except Exception as e:
+            try:
+                LOGGER.warning(f"[MGA] Failed writing results.csv: {e}")
+            except Exception:
+                pass
+
     def _log_losses_csv(self) -> None:
-        """Append current loss_items tensor (aligned to self.loss_names) to a CSV file under save_dir."""
-        try:
-            if not getattr(self.args, 'save', True):  # honor save flag
-                return
-            import csv
-            from pathlib import Path
-            if not hasattr(self, 'loss_names') or not hasattr(self, 'loss_items'):
-                return
-            save_dir = Path(getattr(self, 'save_dir', '.'))
-            csv_path = save_dir / 'loss_log.csv'
-            header = ['epoch'] + list(self.loss_names)
-            row = [self.epoch] + [float(x) for x in self.loss_items.detach().cpu().tolist()]
-            write_header = not csv_path.exists()
-            with csv_path.open('a', newline='') as f:
-                w = csv.writer(f)
-                if write_header:
-                    w.writerow(header)
-                w.writerow(row)
-        except Exception:
-            pass  # non-critical
+        # Deprecated: we now write everything into results.csv
+        return
+
 
     def after_epoch(self):  # type: ignore[override]
         super().after_epoch()
@@ -322,3 +341,114 @@ class MGATrainer(DetectionTrainer):
                 LOGGER.warning(f"[MGA] final_eval failed: {e}")
             except Exception:
                 pass
+    
+    def _collect_train_epoch_losses(self) -> Dict[str, float]:
+        """
+        Build a dict of per-epoch TRAIN losses using Ultralytics' running mean `self.tloss`
+        and the order in `self.loss_names`.
+
+        Expected names from your criterion(): ["box","cls","dfl","p3_bce","p3_dice","p4_bce","p4_dice","p5_bce","p5_dice","seg_total"].
+        This function is defensive if names are missing or reordered.
+        """
+        out: Dict[str, float] = {}
+        if not hasattr(self, "tloss") or self.tloss is None or not hasattr(self, "loss_names"):
+            return out
+
+        # Convert tloss to a name->value mapping
+        vals = self.tloss.detach().cpu().tolist() if hasattr(self.tloss, "detach") else list(self.tloss)
+        names = list(self.loss_names)
+        # pad/trim to align
+        if isinstance(vals, (int, float)):
+            vals = [float(vals)]
+        if len(vals) < len(names):
+            vals = list(vals) + [0.0] * (len(names) - len(vals))
+        elif len(vals) > len(names):
+            vals = vals[:len(names)]
+        d = {k: float(v) for k, v in zip(names, vals)}
+
+        # Detection components
+        def pick(m: Dict[str, float], *keys: str) -> float:
+            for k in keys:
+                if k in m:
+                    return m[k]
+            return 0.0
+        box = pick(d, "box", "box_loss")
+        cls_ = pick(d, "cls", "cls_loss")
+        dfl = pick(d, "dfl", "dfl_loss")
+        det_total = box + cls_ + dfl
+
+        # Segmentation components
+        seg_total = d.get("seg_total", 0.0)
+        p3_bce  = d.get("p3_bce", 0.0)
+        p3_dice = d.get("p3_dice", 0.0)
+        p4_bce  = d.get("p4_bce", 0.0)
+        p4_dice = d.get("p4_dice", 0.0)
+        p5_bce  = d.get("p5_bce", 0.0)
+        p5_dice = d.get("p5_dice", 0.0)
+
+        out.update({
+            "train/det/total": det_total,
+            "train/det/box":   box,
+            "train/det/dfl":   dfl,
+            "train/det/cls":   cls_,
+            "train/seg/total": seg_total,
+            "train/seg/p3_bce": p3_bce,
+            "train/seg/p3_dice": p3_dice,
+            "train/seg/p4_bce": p4_bce,
+            "train/seg/p4_dice": p4_dice,
+            "train/seg/p5_bce": p5_bce,
+            "train/seg/p5_dice": p5_dice,
+        })
+        return out
+
+
+    def _collect_val_epoch_losses(self, metrics: Dict[str, Any]) -> Dict[str, float]:
+        """
+        Build a dict of per-epoch VALIDATION losses from the validator metrics dict.
+        We support multiple key variants to be robust:
+        - box loss: one of ['val/box','val/box_loss','box_loss']
+        - cls loss: ['val/cls','val/cls_loss','cls_loss']
+        - dfl loss: ['val/dfl','val/dfl_loss','dfl_loss']
+        - seg total: ['val/seg_total','val/Loss','seg_total']
+        - seg per-scale: ['val/p3_bce', 'p3_bce'], etc.
+        """
+        def first(*keys: str) -> float:
+            for k in keys:
+                v = metrics.get(k, None)
+                if v is not None:
+                    try:
+                        return float(v)
+                    except Exception:
+                        pass
+            return 0.0
+
+        # Detection parts
+        box = first("val/box", "val/box_loss", "box_loss")
+        cls_ = first("val/cls", "val/cls_loss", "cls_loss")
+        dfl = first("val/dfl", "val/dfl_loss", "dfl_loss")
+        det_total = box + cls_ + dfl
+
+        # Segmentation total (support 'val/Loss' as some validators expose this)
+        seg_total = first("val/seg_total", "val/Loss", "seg_total")
+
+        # Segmentation per-scale (K→val/K fallback)
+        p3_bce  = first("val/p3_bce",  "p3_bce")
+        p3_dice = first("val/p3_dice", "p3_dice")
+        p4_bce  = first("val/p4_bce",  "p4_bce")
+        p4_dice = first("val/p4_dice", "p4_dice")
+        p5_bce  = first("val/p5_bce",  "p5_bce")
+        p5_dice = first("val/p5_dice", "p5_dice")
+
+        return {
+            "val/det/total": det_total,
+            "val/det/box":   box,
+            "val/det/dfl":   dfl,
+            "val/det/cls":   cls_,
+            "val/seg/total": seg_total,
+            "val/seg/p3_bce": p3_bce,
+            "val/seg/p3_dice": p3_dice,
+            "val/seg/p4_bce": p4_bce,
+            "val/seg/p4_dice": p4_dice,
+            "val/seg/p5_bce": p5_bce,
+            "val/seg/p5_dice": p5_dice,
+        }

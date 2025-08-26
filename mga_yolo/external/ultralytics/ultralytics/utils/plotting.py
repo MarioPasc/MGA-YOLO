@@ -874,6 +874,64 @@ def plot_results(
     from scipy.ndimage import gaussian_filter1d
 
     save_dir = Path(file).parent if file else Path(dir)
+    mga_loss_log = save_dir / "loss_log.csv"
+    # MGA mode: if a detailed loss_log.csv with segmentation columns exists, plot grouped Det vs Seg losses
+    if mga_loss_log.exists():
+        try:
+            import matplotlib.pyplot as plt  # scope for faster 'import ultralytics'
+            import pandas as pd
+            from scipy.ndimage import gaussian_filter1d
+
+            df = pd.read_csv(mga_loss_log)
+            cols = [c.strip() for c in df.columns]
+            # Identify segmentation and detection keys from the CSV header
+            seg_keys = [
+                k for k in cols if k in {"p3_bce", "p3_dice", "p4_bce", "p4_dice", "p5_bce", "p5_dice", "seg_total"}
+            ]
+            det_keys = [
+                k
+                for k in cols
+                if k not in {"epoch"} and k not in {"p3_bce", "p3_dice", "p4_bce", "p4_dice", "p5_bce", "p5_dice", "seg_total"}
+            ]
+            if seg_keys:  # only trigger grouped plot if segmentation keys exist
+                epochs = df["epoch"].values
+                # Determine rows as max of counts; ensure at least 1 row per group
+                n_det = max(len(det_keys), 1)
+                n_seg = max(len(seg_keys), 1)
+                rows = max(n_det, n_seg)
+                fig, ax = plt.subplots(rows, 2, figsize=(14, max(4, rows * 1.8)), tight_layout=True)
+                if rows == 1:
+                    ax = ax.reshape(1, 2)
+                # Left column: detection losses
+                for i, k in enumerate(det_keys):
+                    y = df[k].astype(float).values
+                    ax[i, 0].plot(epochs, y, marker=".", linewidth=2, markersize=6, label=k)
+                    ax[i, 0].plot(epochs, gaussian_filter1d(y, sigma=2), ":", linewidth=1.5, label="smooth")
+                    ax[i, 0].set_title(k)
+                if not det_keys:
+                    ax[0, 0].set_title("det_losses")
+                    ax[0, 0].axis("off")
+                # Right column: segmentation losses
+                for i, k in enumerate(seg_keys):
+                    y = df[k].astype(float).values
+                    ax[i, 1].plot(epochs, y, marker=".", linewidth=2, markersize=6, label=k)
+                    ax[i, 1].plot(epochs, gaussian_filter1d(y, sigma=2), ":", linewidth=1.5, label="smooth")
+                    ax[i, 1].set_title(k)
+                # Legends
+                ax[min(len(det_keys), rows) - 1, 0].legend()
+                ax[min(len(seg_keys), rows) - 1, 1].legend()
+                # Global titles for columns
+                fig.suptitle("Training losses (Detection vs Segmentation)")
+                ax[0, 0].set_ylabel("Det losses")
+                ax[0, 1].set_ylabel("Seg losses")
+                fname = save_dir / "results.png"
+                fig.savefig(fname, dpi=200)
+                plt.close()
+                if on_plot:
+                    on_plot(fname)
+                return
+        except Exception as e:
+            LOGGER.warning(f"MGA results plotting fallback to default due to error: {e}")
     if classify:
         fig, ax = plt.subplots(2, 2, figsize=(6, 6), tight_layout=True)
         index = [2, 5, 3, 4]
