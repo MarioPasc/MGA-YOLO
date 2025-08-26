@@ -93,7 +93,7 @@ def test_mga_detect_and_seg_train_10_epochs(tmp_path):
         epochs=3,
         imgsz=640,
         batch=2,
-    device=device,
+        device=device,
         workers=0,
         save=True,
         val=True,

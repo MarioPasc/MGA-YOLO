@@ -843,7 +843,6 @@ def plot_images(
     if on_plot:
         on_plot(fname)
 
-
 @plt_settings()
 def plot_results(
     file: str = "path/to/results.csv",
@@ -852,122 +851,300 @@ def plot_results(
     pose: bool = False,
     classify: bool = False,
     on_plot: Optional[Callable] = None,
+    smooth_sigma: float = 3.0,
 ):
     """
-    Plot training results from a results CSV file. The function supports various types of data including segmentation,
-    pose estimation, and classification. Plots are saved as 'results.png' in the directory where the CSV is located.
+    Plot a structured, publication-quality figure from Ultralytics training results distinguishing:
+    (i) Detection losses, (ii) Segmentation losses (Seg Total centered spanning rows; P3/P4/P5 split by Dice and BCA),
+    and (iii) Performance metrics (Precision, Recall, mAP50, mAP50-95). The main data source is results*.csv
+    in the directory. Multiple files are overlaid when present.
 
     Args:
-        file (str, optional): Path to the CSV file containing the training results.
-        dir (str, optional): Directory where the CSV file is located if 'file' is not provided.
-        segment (bool, optional): Flag to indicate if the data is for segmentation.
-        pose (bool, optional): Flag to indicate if the data is for pose estimation.
-        classify (bool, optional): Flag to indicate if the data is for classification.
-        on_plot (callable, optional): Callback function to be executed after plotting. Takes filename as an argument.
+        file: Path to a results.csv; if not set, uses 'dir'.
+        dir: Directory to search for 'results*.csv' when 'file' is empty.
+        segment: Unused in the new layout (kept for API compatibility).
+        pose: Unused in the new layout (kept for API compatibility).
+        classify: Unused in the new layout (kept for API compatibility).
+        on_plot: Optional callback receiving the saved figure path.
+        smooth_sigma: Gaussian smoothing sigma applied to all curves (dotted line).
 
-    Examples:
-        >>> from ultralytics.utils.plotting import plot_results
-        >>> plot_results("path/to/results.csv", segment=True)
+    Notes:
+        - The function attempts to resolve columns using flexible aliases to accommodate different Ultralytics versions.
+        - Missing signals are skipped gracefully with a logger warning.
+        - Figure is saved as 'results.png' alongside the CSV(s) with IEEE/Science styling if available.
     """
-    import matplotlib.pyplot as plt  # scope for faster 'import ultralytics'
+    # Local imports for speed and isolation
+    import matplotlib.pyplot as plt
     import pandas as pd
+    import numpy as np
+    from pathlib import Path
+    from matplotlib import gridspec
     from scipy.ndimage import gaussian_filter1d
 
-    save_dir = Path(file).parent if file else Path(dir)
-    mga_loss_log = save_dir / "loss_log.csv"
-    # MGA mode: if a detailed loss_log.csv with segmentation columns exists, plot grouped Det vs Seg losses
-    if mga_loss_log.exists():
-        try:
-            import matplotlib.pyplot as plt  # scope for faster 'import ultralytics'
-            import pandas as pd
-            from scipy.ndimage import gaussian_filter1d
+    # -------------------------
+    # Styling (science + IEEE)
+    # -------------------------
+    try:
+        import scienceplots  # noqa: F401
+        plt.style.use(["science", "ieee"])
+        plt.rcParams.update({
+            "font.size": 8,
+            "font.family": "serif",
+            "font.serif": "Times",
+            "text.usetex": True,  # assume LaTeX is present as requested
+        })
+    except Exception as e:
+        LOGGER.warning(f"Science/IEEE style not available ({e}); falling back to default Matplotlib.")
+        plt.rcParams.update({
+            "font.size": 8,
+            "font.family": "serif",
+            "font.serif": "Times",
+        })
 
-            df = pd.read_csv(mga_loss_log)
-            cols = [c.strip() for c in df.columns]
-            # Identify segmentation and detection keys from the CSV header
-            seg_keys = [
-                k for k in cols if k in {"p3_bce", "p3_dice", "p4_bce", "p4_dice", "p5_bce", "p5_dice", "seg_total"}
-            ]
-            det_keys = [
-                k
-                for k in cols
-                if k not in {"epoch"} and k not in {"p3_bce", "p3_dice", "p4_bce", "p4_dice", "p5_bce", "p5_dice", "seg_total"}
-            ]
-            if seg_keys:  # only trigger grouped plot if segmentation keys exist
-                epochs = df["epoch"].values
-                # Determine rows as max of counts; ensure at least 1 row per group
-                n_det = max(len(det_keys), 1)
-                n_seg = max(len(seg_keys), 1)
-                rows = max(n_det, n_seg)
-                fig, ax = plt.subplots(rows, 2, figsize=(14, max(4, rows * 1.8)), tight_layout=True)
-                if rows == 1:
-                    ax = ax.reshape(1, 2)
-                # Left column: detection losses
-                for i, k in enumerate(det_keys):
-                    y = df[k].astype(float).values
-                    ax[i, 0].plot(epochs, y, marker=".", linewidth=2, markersize=6, label=k)
-                    ax[i, 0].plot(epochs, gaussian_filter1d(y, sigma=2), ":", linewidth=1.5, label="smooth")
-                    ax[i, 0].set_title(k)
-                if not det_keys:
-                    ax[0, 0].set_title("det_losses")
-                    ax[0, 0].axis("off")
-                # Right column: segmentation losses
-                for i, k in enumerate(seg_keys):
-                    y = df[k].astype(float).values
-                    ax[i, 1].plot(epochs, y, marker=".", linewidth=2, markersize=6, label=k)
-                    ax[i, 1].plot(epochs, gaussian_filter1d(y, sigma=2), ":", linewidth=1.5, label="smooth")
-                    ax[i, 1].set_title(k)
-                # Legends
-                ax[min(len(det_keys), rows) - 1, 0].legend()
-                ax[min(len(seg_keys), rows) - 1, 1].legend()
-                # Global titles for columns
-                fig.suptitle("Training losses (Detection vs Segmentation)")
-                ax[0, 0].set_ylabel("Det losses")
-                ax[0, 1].set_ylabel("Seg losses")
-                fname = save_dir / "results.png"
-                fig.savefig(fname, dpi=200)
-                plt.close()
-                if on_plot:
-                    on_plot(fname)
-                return
-        except Exception as e:
-            LOGGER.warning(f"MGA results plotting fallback to default due to error: {e}")
-    if classify:
-        fig, ax = plt.subplots(2, 2, figsize=(6, 6), tight_layout=True)
-        index = [2, 5, 3, 4]
-    elif segment:
-        fig, ax = plt.subplots(2, 8, figsize=(18, 6), tight_layout=True)
-        index = [2, 3, 4, 5, 6, 7, 10, 11, 14, 15, 16, 17, 8, 9, 12, 13]
-    elif pose:
-        fig, ax = plt.subplots(2, 9, figsize=(21, 6), tight_layout=True)
-        index = [2, 3, 4, 5, 6, 7, 8, 11, 12, 15, 16, 17, 18, 19, 9, 10, 13, 14]
-    else:
-        fig, ax = plt.subplots(2, 5, figsize=(12, 6), tight_layout=True)
-        index = [2, 3, 4, 5, 6, 9, 10, 11, 7, 8]
-    ax = ax.ravel()
-    files = list(save_dir.glob("results*.csv"))
+    # -------------------------
+    # Resolve paths and files
+    # -------------------------
+    save_dir = Path(file).parent if file else Path(dir)
+    files = list(save_dir.glob("results*.csv")) if save_dir.exists() else []
+    if file:
+        p = Path(file)
+        if p.exists() and p not in files:
+            files.insert(0, p)
     assert len(files), f"No results.csv files found in {save_dir.resolve()}, nothing to plot."
+
+    # -------------------------
+    # Column alias resolution
+    # -------------------------
+    # Accept a range of possible header names for robustness.
+    ALIASES = {
+        "x": ["epoch", "Epoch", "step", "Step", "iter", "iteration"],
+
+        # Detection losses
+        "det_total": ["loss/det_total", "det_total", "train/total_loss", "train/loss", "loss/total", "total_loss"],
+        "det_box":   ["loss/box", "train/box_loss", "box_loss", "box"],
+        "det_dfl":   ["loss/dfl", "train/dfl_loss", "dfl_loss", "dfl"],
+        "det_cls":   ["loss/cls", "train/cls_loss", "cls_loss", "cls"],
+
+        # Segmentation losses (total + per-scale)
+        "seg_total": ["loss/seg_total", "seg_total", "loss/seg", "train/seg_loss", "seg_loss"],
+
+        "p3_dice":   ["loss/p3_dice", "p3_dice", "seg/p3_dice"],
+        "p3_bca":    ["loss/p3_bca", "p3_bca", "p3_bce", "seg/p3_bca", "p3_BCA"],
+
+        "p4_dice":   ["loss/p4_dice", "p4_dice", "seg/p4_dice"],
+        "p4_bca":    ["loss/p4_bca", "p4_bca", "p4_bce", "seg/p4_bca", "p4_BCA"],
+
+        "p5_dice":   ["loss/p5_dice", "p5_dice", "seg/p5_dice"],
+        "p5_bca":    ["loss/p5_bca", "p5_bca", "p5_bce", "seg/p5_bca", "p5_BCA"],
+
+        # Metrics
+        "precision": ["metrics/precision(B)", "metrics/precision", "precision", "Precision"],
+        "recall":    ["metrics/recall(B)", "metrics/recall", "recall", "Recall"],
+        "map50":     ["metrics/mAP50(B)", "metrics/mAP50", "mAP50", "map50"],
+        "map5095":   ["metrics/mAP50-95(B)", "metrics/mAP50-95", "mAP50-95", "map50-95", "mAP@0.50:0.95"],
+    }
+
+    def _get_col_name(header: list, candidates: list) -> Optional[str]:
+        """Return the first matching column name from candidates or None."""
+        s = {h.strip(): h for h in header}
+        for c in candidates:
+            if c in s:
+                return s[c]
+        # Also try relaxed matching (lowercase without spaces)
+        normalized = {h.strip().lower().replace(" ", ""): h for h in header}
+        for c in candidates:
+            key = c.strip().lower().replace(" ", "")
+            if key in normalized:
+                return normalized[key]
+        return None
+
+    def _resolve_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+        """Map logical keys to actual column names present in df."""
+        hdr = [h.strip() for h in df.columns]
+        resolved = {}
+        for k, cands in ALIASES.items():
+            resolved[k] = _get_col_name(hdr, cands)
+            if resolved[k] is None and k not in {"p3_dice", "p3_bca", "p4_dice", "p4_bca", "p5_dice", "p5_bca"}:
+                LOGGER.warning(f"[plot_results] Missing column for '{k}'. Tried: {cands}")
+        return resolved
+
+    def _plot_one(ax, x, y, label: str, title: str, sigma: float = 3.0):
+        """Plot raw and smoothed curves on a given axis."""
+        try:
+            y = y.astype(float)
+        except Exception:
+            y = y.values.astype(float)
+        ax.plot(x, y, marker=".", linewidth=1.3, markersize=3.5, label=label)
+        if len(y) >= 5 and sigma > 0:
+            ys = gaussian_filter1d(y, sigma=sigma)
+            ax.plot(x, ys, linestyle=":", linewidth=1.3, label=f"{label} (smooth)")
+        ax.set_title(title, pad=2.0)
+        ax.grid(True, which="major", alpha=0.25)
+        ax.tick_params(axis="both", which="both", length=2)
+
+    # --------------------------------------------
+    # Figure layout with GridSpec (3 vertical blocks)
+    # --------------------------------------------
+    # Height ratios chosen to give prominence to detection+segmentation sections
+    fig = plt.figure(figsize=(7.4, 7.6), constrained_layout=False)  # IEEE-ish width
+    outer = gridspec.GridSpec(
+        nrows=7, ncols=4, figure=fig,
+        height_ratios=[1.1, 1.1, 1.1, 1.1, 0.3, 1.2, 0.9],  # 4 rows det, spacer, 2 rows seg, metrics below will reuse rows
+        wspace=0.45, hspace=0.7
+    )
+
+    # Block indices
+    det_rows = [0, 1, 2, 3]        # four stacked rows
+    spacer_row = 4                 # thin spacer row (we will draw a horizontal rule below it)
+    seg_rows = [5, 6]              # two rows (Dice / BCA)
+    # For metrics, create a new GridSpec below segmentation to keep a larger spacing
+    metrics_gs = gridspec.GridSpecFromSubplotSpec(
+        1, 4, subplot_spec=outer[6, :], wspace=0.55, hspace=0.0
+    )
+
+    # Axes containers
+    axes_det = []  # 4 axes in col 0
+    for r in det_rows:
+        axes_det.append(fig.add_subplot(outer[r, 0]))
+
+    # Segmentation: seg_total spans both seg rows in col 0; P3/P4/P5 fill cols 1..3 with dice (row 0) and bca (row 1)
+    ax_seg_total = fig.add_subplot(outer[5:7, 0])  # rowspan=2 on col 0
+    ax_p3_dice = fig.add_subplot(outer[5, 1])
+    ax_p4_dice = fig.add_subplot(outer[5, 2])
+    ax_p5_dice = fig.add_subplot(outer[5, 3])
+    ax_p3_bca  = fig.add_subplot(outer[6, 1])
+    ax_p4_bca  = fig.add_subplot(outer[6, 2])
+    ax_p5_bca  = fig.add_subplot(outer[6, 3])
+
+    # Metrics (single row, 4 columns)
+    ax_prec   = fig.add_subplot(metrics_gs[0, 0])
+    ax_rec    = fig.add_subplot(metrics_gs[0, 1])
+    ax_map50  = fig.add_subplot(metrics_gs[0, 2])
+    ax_map5095= fig.add_subplot(metrics_gs[0, 3])
+
+    # --------------------------------------------
+    # Draw horizontal separators (figure coordinates)
+    # --------------------------------------------
+    # Compute approximate y positions for rules based on height ratios
+    hr = np.array([1.1,1.1,1.1,1.1,0.3,1.2,0.9], dtype=float)
+    hr /= hr.sum()
+    y1 = 1.0 - hr[:5].sum()  # below spacer (between detection and segmentation)
+    y2 = hr[-1]              # metrics block height (we put the line above it)
+    y2 = y1 - hr[5]          # above metrics (below segmentation)
+    for y in (y1 + 0.005, y2 + 0.005):
+        fig.lines.append(plt.Line2D([0.06, 0.98], [y, y], transform=fig.transFigure, linewidth=0.8, alpha=0.6))
+
+    # --------------------------------------------------
+    # Read and plot each available results*.csv (overlay)
+    # --------------------------------------------------
+    any_curve = False
     for f in files:
         try:
-            data = pd.read_csv(f)
-            s = [x.strip() for x in data.columns]
-            x = data.values[:, 0]
-            for i, j in enumerate(index):
-                y = data.values[:, j].astype("float")
-                # y[y == 0] = np.nan  # don't show zero values
-                ax[i].plot(x, y, marker=".", label=f.stem, linewidth=2, markersize=8)  # actual results
-                ax[i].plot(x, gaussian_filter1d(y, sigma=3), ":", label="smooth", linewidth=2)  # smoothing line
-                ax[i].set_title(s[j], fontsize=12)
-                # if j in {8, 9, 10}:  # share train and val loss y axes
-                #     ax[i].get_shared_y_axes().join(ax[i], ax[i - 5])
+            df = pd.read_csv(f)
+            keys = _resolve_columns(df)
+            # x-axis
+            x_name = keys["x"] or df.columns[0]
+            x = df[x_name].values
+
+            # DETECTION (first column, 4 rows)
+            # Order: det_total | det_box | det_dfl | det_cls
+            det_map = [
+                ("det_total", "Detection total"),
+                ("det_box",   "Box loss"),
+                ("det_dfl",   "DFL loss"),
+                ("det_cls",   "Cls loss"),
+            ]
+            for ax, (k, ttl) in zip(axes_det, det_map):
+                cname = keys.get(k, None)
+                if cname is None:  # skip missing
+                    ax.set_title(ttl + " (missing)")
+                    ax.grid(True, alpha=0.15)
+                    continue
+                _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma)
+                any_curve = True
+
+            # SEGMENTATION (two rows; seg_total centered spanning rows; P3/P4/P5 by dice/bca)
+            if keys.get("seg_total", None):
+                _plot_one(ax_seg_total, x, df[keys["seg_total"]], label=f.stem, title="Seg total", sigma=smooth_sigma)
+                any_curve = True
+            else:
+                ax_seg_total.set_title("Seg total (missing)")
+                ax_seg_total.grid(True, alpha=0.15)
+
+            # P3/P4/P5 Dice (top row of seg block)
+            for ax, name_key, ttl in [
+                (ax_p3_dice, "p3_dice", "P3 Dice"),
+                (ax_p4_dice, "p4_dice", "P4 Dice"),
+                (ax_p5_dice, "p5_dice", "P5 Dice"),
+            ]:
+                cname = keys.get(name_key, None)
+                if cname is None:
+                    ax.set_title(ttl + " (missing)")
+                    ax.grid(True, alpha=0.15)
+                    continue
+                _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma)
+                any_curve = True
+
+            # P3/P4/P5 BCA (bottom row of seg block)
+            for ax, name_key, ttl in [
+                (ax_p3_bca, "p3_bca", "P3 BCA"),
+                (ax_p4_bca, "p4_bca", "P4 BCA"),
+                (ax_p5_bca, "p5_bca", "P5 BCA"),
+            ]:
+                cname = keys.get(name_key, None)
+                if cname is None:
+                    ax.set_title(ttl + " (missing)")
+                    ax.grid(True, alpha=0.15)
+                    continue
+                _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma)
+                any_curve = True
+
+            # METRICS (single row, 4 columns)
+            metrics_map = [
+                ("precision", "Precision"),
+                ("recall",    "Recall"),
+                ("map50",     r"mAP@0.50"),
+                ("map5095",   r"mAP@0.50:0.95"),
+            ]
+            for ax, (k, ttl) in zip([ax_prec, ax_rec, ax_map50, ax_map5095], metrics_map):
+                cname = keys.get(k, None)
+                if cname is None:
+                    ax.set_title(ttl + " (missing)")
+                    ax.grid(True, alpha=0.15)
+                    continue
+                _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma)
+                any_curve = True
+
         except Exception as e:
-            LOGGER.error(f"Plotting error for {f}: {e}")
-    ax[1].legend()
+            LOGGER.error(f"[plot_results] Plotting error for {f}: {e}")
+
+    # -------------------------
+    # Axis cosmetics & legends
+    # -------------------------
+    # Share X among blocks that use epochs/steps to keep ticks aligned
+    for ax in axes_det + [ax_seg_total, ax_p3_dice, ax_p4_dice, ax_p5_dice, ax_p3_bca, ax_p4_bca, ax_p5_bca,
+                          ax_prec, ax_rec, ax_map50, ax_map5095]:
+        ax.set_xlabel("Epoch")  # generic label; alias resolver covers other names but we display Epoch for clarity
+
+    # Put small legends on the last row of each block to avoid clutter
+    if any_curve:
+        # Detection legend (last axis of detection block)
+        axes_det[-1].legend(loc="upper right", fontsize=7, frameon=False, handlelength=2)
+        # Segmentation legends
+        ax_p5_bca.legend(loc="upper right", fontsize=7, frameon=False, handlelength=2)
+        # Metrics legend
+        ax_map5095.legend(loc="upper right", fontsize=7, frameon=False, handlelength=2)
+
+    # Tighten and save
     fname = save_dir / "results.png"
-    fig.savefig(fname, dpi=200)
-    plt.close()
+    try:
+        fig.savefig(fname, dpi=300, bbox_inches="tight", pad_inches=0.02)
+    finally:
+        plt.close(fig)
+
     if on_plot:
         on_plot(fname)
+    LOGGER.info(f"[plot_results] Saved {fname}")
 
 
 def plt_color_scatter(v, f, bins: int = 20, cmap: str = "viridis", alpha: float = 0.8, edgecolors: str = "none"):

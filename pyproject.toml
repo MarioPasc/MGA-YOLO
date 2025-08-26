@@ -20,6 +20,7 @@ dependencies = [
   "pyyaml>=6.0",
   "pillow>=10.0",
   "rich>=13.0",
+  "scienceplots",
 
   "numpy>=1.23.0",
   "matplotlib>=3.3.0",
@@ -46,7 +47,13 @@ Homepage = "https://github.com/MarioPasc/MGA-YOLO"
 # ────────────── Setuptools discovery ──────
 
 [tool.setuptools.packages.find]
-include = ["mga_yolo", "mga_yolo.*", "ultralytics", "ultralytics.*"]
+# Discover our main package and the vendored top-level 'ultralytics' package
+include = [
+  "mga_yolo",
+  "mga_yolo.*",
+  "ultralytics",
+  "ultralytics.*",
+]
 
 [tool.setuptools.package-dir]
 ultralytics = "mga_yolo/external/ultralytics/ultralytics"
