@@ -90,7 +90,7 @@ def test_mga_detect_and_seg_train_10_epochs(tmp_path):
     results = model.train(
         data=str(data_yaml),
         task='mga',
-        epochs=3,
+        epochs=100,
         imgsz=640,
         batch=2,
         device=device,

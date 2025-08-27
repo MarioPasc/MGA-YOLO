@@ -293,10 +293,13 @@ class Annotator:
             >>> annotator.get_txt_color(color=(104, 31, 17))  # return (255, 255, 255)
         """
         if color in self.dark_colors:
-            return 104, 31, 17
+            # Use white text on dark backgrounds
+            return (255, 255, 255)
         elif color in self.light_colors:
-            return 255, 255, 255
+            # Use black text on light backgrounds
+            return (0, 0, 0)
         else:
+            # Fallback to provided default
             return txt_color
 
     def box_label(self, box, label: str = "", color: tuple = (128, 128, 128), txt_color: tuple = (255, 255, 255)):
@@ -742,14 +745,20 @@ def plot_images(
     mosaic = np.full((int(ns * h), int(ns * w), 3), 255, dtype=np.uint8)  # init
     for i in range(bs):
         x, y = int(w * (i // ns)), int(h * (i % ns))  # block origin
-        mosaic[y : y + h, x : x + w, :] = images[i].transpose(1, 2, 0)
+        # Handle tensor vs numpy array for transpose
+        if isinstance(images[i], torch.Tensor):
+            img_i = images[i].permute(1, 2, 0).cpu().numpy()
+        else:
+            img_i = images[i].transpose(1, 2, 0)
+        mosaic[y : y + h, x : x + w, :] = img_i
 
     # Resize (optional)
     scale = max_size / ns / max(h, w)
     if scale < 1:
         h = math.ceil(scale * h)
         w = math.ceil(scale * w)
-        mosaic = cv2.resize(mosaic, tuple(int(x * ns) for x in (w, h)))
+        # Ensure the resized mosaic is of the correct dtype
+        mosaic = cv2.resize(mosaic, tuple(int(x * ns) for x in (w, h))).astype(np.uint8)
 
     # Annotate
     fs = int((h + w) * ns * 0.01)  # font size
@@ -763,7 +772,7 @@ def plot_images(
         if len(cls) > 0:
             idx = batch_idx == i
             classes = cls[idx].astype("int")
-            labels = confs is None
+            is_label_mode = confs is None  # True if this is a ground truth without confidence scores
 
             if len(bboxes):
                 boxes = bboxes[idx]
@@ -783,8 +792,8 @@ def plot_images(
                     c = classes[j]
                     color = colors(c)
                     c = names.get(c, c) if names else c
-                    if labels or conf[j] > conf_thres:
-                        label = f"{c}" if labels else f"{c} {conf[j]:.1f}"
+                    if is_label_mode or (conf is not None and conf[j] > conf_thres):
+                        label = f"{c}" if is_label_mode else f"{c} {conf[j]:.1f}"
                         annotator.box_label(box, label, color=color)
 
             elif len(classes):
@@ -805,7 +814,7 @@ def plot_images(
                 kpts_[..., 0] += x
                 kpts_[..., 1] += y
                 for j in range(len(kpts_)):
-                    if labels or conf[j] > conf_thres:
+                    if is_label_mode or (conf is not None and conf[j] > conf_thres):
                         annotator.kpts(kpts_[j], conf_thres=conf_thres)
 
             # Plot masks
@@ -821,7 +830,7 @@ def plot_images(
 
                 im = np.asarray(annotator.im).copy()
                 for j in range(len(image_masks)):
-                    if labels or conf[j] > conf_thres:
+                    if is_label_mode or (conf is not None and conf[j] > conf_thres):
                         color = colors(classes[j])
                         mh, mw = image_masks[j].shape
                         if mh != h or mw != w:
@@ -837,11 +846,15 @@ def plot_images(
                         except Exception:
                             pass
                 annotator.fromarray(im)
+    
+    result = np.asarray(annotator.im)
     if not save:
-        return np.asarray(annotator.im)
+        return result
     annotator.im.save(fname)  # save
     if on_plot:
         on_plot(fname)
+    return None  # explicitly return None when saving to file
+    
 
 @plt_settings()
 def plot_results(
@@ -852,33 +865,24 @@ def plot_results(
     classify: bool = False,
     on_plot: Optional[Callable] = None,
     smooth_sigma: float = 3.0,
+    separator_offset: float = 0.7,  
 ):
-    """
-    Plot a structured, publication-quality figure from Ultralytics training results distinguishing:
-    (i) Detection losses, (ii) Segmentation losses (Seg Total centered spanning rows; P3/P4/P5 split by Dice and BCA),
-    and (iii) Performance metrics (Precision, Recall, mAP50, mAP50-95). The main data source is results*.csv
-    in the directory. Multiple files are overlaid when present.
 
-    Args:
-        file: Path to a results.csv; if not set, uses 'dir'.
-        dir: Directory to search for 'results*.csv' when 'file' is empty.
-        segment: Unused in the new layout (kept for API compatibility).
-        pose: Unused in the new layout (kept for API compatibility).
-        classify: Unused in the new layout (kept for API compatibility).
-        on_plot: Optional callback receiving the saved figure path.
-        smooth_sigma: Gaussian smoothing sigma applied to all curves (dotted line).
-
-    Notes:
-        - The function attempts to resolve columns using flexible aliases to accommodate different Ultralytics versions.
-        - Missing signals are skipped gracefully with a logger warning.
-        - Figure is saved as 'results.png' alongside the CSV(s) with IEEE/Science styling if available.
     """
-    # Local imports for speed and isolation
+    Publication-style training figure distinguishing:
+      - Detection Loss (row): total, box, dfl, cls
+      - Segmentation Loss (2 rows): seg total spanning both rows in col 0; P3/P4/P5 with Dice (row 1) and BCE (row 2)
+      - Detection Performance (row): precision, recall, mAP@0.50, mAP@0.50:0.95
+
+    The main source is results*.csv in save_dir. Multiple files are overlaid.
+    """
+    # Local imports
     import matplotlib.pyplot as plt
     import pandas as pd
     import numpy as np
     from pathlib import Path
     from matplotlib import gridspec
+    from matplotlib.lines import Line2D
     from scipy.ndimage import gaussian_filter1d
 
     # -------------------------
@@ -891,7 +895,7 @@ def plot_results(
             "font.size": 8,
             "font.family": "serif",
             "font.serif": "Times",
-            "text.usetex": True,  # assume LaTeX is present as requested
+            "text.usetex": True,
         })
     except Exception as e:
         LOGGER.warning(f"Science/IEEE style not available ({e}); falling back to default Matplotlib.")
@@ -915,42 +919,45 @@ def plot_results(
     # -------------------------
     # Column alias resolution
     # -------------------------
-    # Accept a range of possible header names for robustness.
     ALIASES = {
+        # x-axis
         "x": ["epoch", "Epoch", "step", "Step", "iter", "iteration"],
 
         # Detection losses
-        "det_total": ["loss/det_total", "det_total", "train/total_loss", "train/loss", "loss/total", "total_loss"],
-        "det_box":   ["loss/box", "train/box_loss", "box_loss", "box"],
-        "det_dfl":   ["loss/dfl", "train/dfl_loss", "dfl_loss", "dfl"],
-        "det_cls":   ["loss/cls", "train/cls_loss", "cls_loss", "cls"],
+        "det_total": ["train/det/total", "val/det/total", "train/total_loss", "loss/det_total",
+                      "det_total", "train/loss", "loss/total", "total_loss"],
+        "det_box":   ["train/det/box", "val/det/box", "train/box", "val/box",
+                      "loss/box", "train/box_loss", "box_loss", "box"],
+        "det_dfl":   ["train/det/dfl", "val/det/dfl", "train/dfl", "val/dfl",
+                      "loss/dfl", "train/dfl_loss", "dfl_loss", "dfl"],
+        "det_cls":   ["train/det/cls", "val/det/cls", "train/cls", "val/cls",
+                      "loss/cls", "train/cls_loss", "cls_loss", "cls"],
 
-        # Segmentation losses (total + per-scale)
-        "seg_total": ["loss/seg_total", "seg_total", "loss/seg", "train/seg_loss", "seg_loss"],
+        # Segmentation totals
+        "seg_total": ["train/seg/total", "train/seg_total", "val/seg/total", "val/seg_total",
+                      "loss/seg_total", "seg_total", "loss/seg", "train/seg_loss", "seg_loss"],
 
-        "p3_dice":   ["loss/p3_dice", "p3_dice", "seg/p3_dice"],
-        "p3_bca":    ["loss/p3_bca", "p3_bca", "p3_bce", "seg/p3_bca", "p3_BCA"],
+        # Segmentation scales — Dice and BCE (accept *bca* as synonym if present)
+        "p3_dice": ["train/seg/p3_dice", "val/seg/p3_dice", "p3_dice", "seg/p3_dice", "loss/p3_dice"],
+        "p4_dice": ["train/seg/p4_dice", "val/seg/p4_dice", "p4_dice", "seg/p4_dice", "loss/p4_dice"],
+        "p5_dice": ["train/seg/p5_dice", "val/seg/p5_dice", "p5_dice", "seg/p5_dice", "loss/p5_dice"],
 
-        "p4_dice":   ["loss/p4_dice", "p4_dice", "seg/p4_dice"],
-        "p4_bca":    ["loss/p4_bca", "p4_bca", "p4_bce", "seg/p4_bca", "p4_BCA"],
-
-        "p5_dice":   ["loss/p5_dice", "p5_dice", "seg/p5_dice"],
-        "p5_bca":    ["loss/p5_bca", "p5_bca", "p5_bce", "seg/p5_bca", "p5_BCA"],
+        "p3_bce":  ["train/seg/p3_bce",  "val/seg/p3_bce",  "p3_bce",  "train/seg/p3_bca", "p3_bca", "seg/p3_bca"],
+        "p4_bce":  ["train/seg/p4_bce",  "val/seg/p4_bce",  "p4_bce",  "train/seg/p4_bca", "p4_bca", "seg/p4_bca"],
+        "p5_bce":  ["train/seg/p5_bce",  "val/seg/p5_bce",  "p5_bce",  "train/seg/p5_bca", "p5_bca", "seg/p5_bca"],
 
         # Metrics
         "precision": ["metrics/precision(B)", "metrics/precision", "precision", "Precision"],
-        "recall":    ["metrics/recall(B)", "metrics/recall", "recall", "Recall"],
-        "map50":     ["metrics/mAP50(B)", "metrics/mAP50", "mAP50", "map50"],
-        "map5095":   ["metrics/mAP50-95(B)", "metrics/mAP50-95", "mAP50-95", "map50-95", "mAP@0.50:0.95"],
+        "recall":    ["metrics/recall(B)",    "metrics/recall",    "recall",    "Recall"],
+        "map50":     ["metrics/mAP50(B)",     "metrics/mAP50",     "mAP50",     "map50"],
+        "map5095":   ["metrics/mAP50-95(B)",  "metrics/mAP50-95",  "mAP50-95",  "map50-95", "mAP@0.50:0.95"],
     }
 
     def _get_col_name(header: list, candidates: list) -> Optional[str]:
-        """Return the first matching column name from candidates or None."""
         s = {h.strip(): h for h in header}
         for c in candidates:
             if c in s:
                 return s[c]
-        # Also try relaxed matching (lowercase without spaces)
         normalized = {h.strip().lower().replace(" ", ""): h for h in header}
         for c in candidates:
             key = c.strip().lower().replace(" ", "")
@@ -959,183 +966,198 @@ def plot_results(
         return None
 
     def _resolve_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
-        """Map logical keys to actual column names present in df."""
         hdr = [h.strip() for h in df.columns]
         resolved = {}
         for k, cands in ALIASES.items():
             resolved[k] = _get_col_name(hdr, cands)
-            if resolved[k] is None and k not in {"p3_dice", "p3_bca", "p4_dice", "p4_bca", "p5_dice", "p5_bca"}:
+            if resolved[k] is None and k not in {"p3_dice", "p4_dice", "p5_dice", "p3_bce", "p4_bce", "p5_bce"}:
                 LOGGER.warning(f"[plot_results] Missing column for '{k}'. Tried: {cands}")
         return resolved
 
+    # Colors and unified-legend collector
+    ACTUAL_COLOR = "#009988"
+    SMOOTH_COLOR = "#EE7733"
+    legend_items: dict[str, Line2D] = {}
+
     def _plot_one(ax, x, y, label: str, title: str, sigma: float = 3.0):
-        """Plot raw and smoothed curves on a given axis."""
-        try:
-            y = y.astype(float)
-        except Exception:
-            y = y.values.astype(float)
-        ax.plot(x, y, marker=".", linewidth=1.3, markersize=3.5, label=label)
+        """Plot raw (solid) and smoothed (dashed) with fixed colors and collect legend entries once per label."""
+        y = np.asarray(y, dtype=float)
+        # actual
+        ln_actual, = ax.plot(x, y, marker=".", linewidth=1.2, markersize=3.2,
+                             color=ACTUAL_COLOR, label=label)
+        # smoothed
         if len(y) >= 5 and sigma > 0:
             ys = gaussian_filter1d(y, sigma=sigma)
-            ax.plot(x, ys, linestyle=":", linewidth=1.3, label=f"{label} (smooth)")
+            ln_smooth, = ax.plot(x, ys, linestyle="--", linewidth=1.2,
+                                 color=SMOOTH_COLOR, label=f"{label} (smooth)")
+            # add proxy for smooth if first time
+            if f"{label} (smooth)" not in legend_items:
+                legend_items[f"{label} (smooth)"] = Line2D([0], [0], linestyle="--", color=SMOOTH_COLOR, linewidth=1.2)
+        # add proxy for actual if first time
+        if label not in legend_items:
+            legend_items[label] = Line2D([0], [0], linestyle="-", color=ACTUAL_COLOR, marker=".", linewidth=1.2,
+                                         markersize=3.2)
+
         ax.set_title(title, pad=2.0)
         ax.grid(True, which="major", alpha=0.25)
         ax.tick_params(axis="both", which="both", length=2)
 
     # --------------------------------------------
-    # Figure layout with GridSpec (3 vertical blocks)
+    # Figure layout (exact schematic with centered separators)
     # --------------------------------------------
-    # Height ratios chosen to give prominence to detection+segmentation sections
-    fig = plt.figure(figsize=(7.4, 7.6), constrained_layout=False)  # IEEE-ish width
+    # Rows:
+    #  0  Detection row (4 panels)
+    #  1  Spacer
+    #  2  Seg row 1 (Seg total + P3/P4/P5 Dice)
+    #  3  Seg row 2 (       —      P3/P4/P5 BCE )
+    #  4  Spacer
+    #  5  Metrics row (4 panels)
+    fig = plt.figure(figsize=(7.6, 8.2), constrained_layout=False)
+    height_ratios = [1.20, 0.35, 1.25, 1.25, 0.40, 1.15]
     outer = gridspec.GridSpec(
-        nrows=7, ncols=4, figure=fig,
-        height_ratios=[1.1, 1.1, 1.1, 1.1, 0.3, 1.2, 0.9],  # 4 rows det, spacer, 2 rows seg, metrics below will reuse rows
-        wspace=0.45, hspace=0.7
+        nrows=len(height_ratios), ncols=4, figure=fig,
+        height_ratios=height_ratios, wspace=0.55, hspace=0.80
     )
 
-    # Block indices
-    det_rows = [0, 1, 2, 3]        # four stacked rows
-    spacer_row = 4                 # thin spacer row (we will draw a horizontal rule below it)
-    seg_rows = [5, 6]              # two rows (Dice / BCA)
-    # For metrics, create a new GridSpec below segmentation to keep a larger spacing
-    metrics_gs = gridspec.GridSpecFromSubplotSpec(
-        1, 4, subplot_spec=outer[6, :], wspace=0.55, hspace=0.0
-    )
+    # Detection row (row 0)
+    ax_det_total = fig.add_subplot(outer[0, 0])
+    ax_det_box   = fig.add_subplot(outer[0, 1])
+    ax_det_dfl   = fig.add_subplot(outer[0, 2])
+    ax_det_cls   = fig.add_subplot(outer[0, 3])
 
-    # Axes containers
-    axes_det = []  # 4 axes in col 0
-    for r in det_rows:
-        axes_det.append(fig.add_subplot(outer[r, 0]))
+    # Segmentation rows (rows 2 and 3)
+    ax_seg_total = fig.add_subplot(outer[2:4, 0])  # span two rows in col 0
+    ax_p3_dice   = fig.add_subplot(outer[2, 1])
+    ax_p4_dice   = fig.add_subplot(outer[2, 2])
+    ax_p5_dice   = fig.add_subplot(outer[2, 3])
+    ax_p3_bce    = fig.add_subplot(outer[3, 1])
+    ax_p4_bce    = fig.add_subplot(outer[3, 2])
+    ax_p5_bce    = fig.add_subplot(outer[3, 3])
 
-    # Segmentation: seg_total spans both seg rows in col 0; P3/P4/P5 fill cols 1..3 with dice (row 0) and bca (row 1)
-    ax_seg_total = fig.add_subplot(outer[5:7, 0])  # rowspan=2 on col 0
-    ax_p3_dice = fig.add_subplot(outer[5, 1])
-    ax_p4_dice = fig.add_subplot(outer[5, 2])
-    ax_p5_dice = fig.add_subplot(outer[5, 3])
-    ax_p3_bca  = fig.add_subplot(outer[6, 1])
-    ax_p4_bca  = fig.add_subplot(outer[6, 2])
-    ax_p5_bca  = fig.add_subplot(outer[6, 3])
-
-    # Metrics (single row, 4 columns)
-    ax_prec   = fig.add_subplot(metrics_gs[0, 0])
-    ax_rec    = fig.add_subplot(metrics_gs[0, 1])
-    ax_map50  = fig.add_subplot(metrics_gs[0, 2])
-    ax_map5095= fig.add_subplot(metrics_gs[0, 3])
+    # Metrics row (row 5)
+    ax_prec     = fig.add_subplot(outer[5, 0])
+    ax_rec      = fig.add_subplot(outer[5, 1])
+    ax_map50    = fig.add_subplot(outer[5, 2])
+    ax_map5095  = fig.add_subplot(outer[5, 3])
 
     # --------------------------------------------
-    # Draw horizontal separators (figure coordinates)
+    # Horizontal separators with configurable offset
+    #   - Lines are placed at the center of each spacer row (1 and 4),
+    #     shifted by 'separator_offset' * spacer_height.
+    #   - Positive offset moves the line upward (towards the previous block).
     # --------------------------------------------
-    # Compute approximate y positions for rules based on height ratios
-    hr = np.array([1.1,1.1,1.1,1.1,0.3,1.2,0.9], dtype=float)
-    hr /= hr.sum()
-    y1 = 1.0 - hr[:5].sum()  # below spacer (between detection and segmentation)
-    y2 = hr[-1]              # metrics block height (we put the line above it)
-    y2 = y1 - hr[5]          # above metrics (below segmentation)
-    for y in (y1 + 0.005, y2 + 0.005):
-        fig.lines.append(plt.Line2D([0.06, 0.98], [y, y], transform=fig.transFigure, linewidth=0.8, alpha=0.6))
+    hr = np.array(height_ratios, dtype=float)
+    hr_norm = hr / hr.sum()
+
+    def _row_center_y(row_idx: int) -> float:
+        """Figure Y of the vertical center of a given GridSpec row."""
+        y_top = 1.0 - float(hr_norm[:row_idx].sum())
+        y_bottom = 1.0 - float(hr_norm[:row_idx + 1].sum())
+        return 0.5 * (y_top + y_bottom)
+
+    def _sep_y(row_idx: int, bias: float) -> float:
+        """Separator Y at row center plus 'bias' times that row's normalized height."""
+        center = _row_center_y(row_idx)
+        shift = bias * float(hr_norm[row_idx])
+        y = center + shift
+        # clamp slightly inside the figure
+        return min(0.98, max(0.02, y))
+
+    # spacer rows are 1 (between Detection and Segmentation) and 4 (between Segmentation and Metrics)
+    y_between_det_seg = _sep_y(1, separator_offset)
+    y_between_seg_met = _sep_y(4, separator_offset)
+
+    for y in (y_between_det_seg, y_between_seg_met):
+        fig.lines.append(plt.Line2D([0.06, 0.98], [y, y], transform=fig.transFigure, linewidth=0.9, alpha=0.7))
 
     # --------------------------------------------------
-    # Read and plot each available results*.csv (overlay)
+    # Read and plot (overlay multiple results*.csv)
     # --------------------------------------------------
     any_curve = False
     for f in files:
         try:
             df = pd.read_csv(f)
             keys = _resolve_columns(df)
-            # x-axis
             x_name = keys["x"] or df.columns[0]
             x = df[x_name].values
 
-            # DETECTION (first column, 4 rows)
-            # Order: det_total | det_box | det_dfl | det_cls
-            det_map = [
-                ("det_total", "Detection total"),
-                ("det_box",   "Box loss"),
-                ("det_dfl",   "DFL loss"),
-                ("det_cls",   "Cls loss"),
-            ]
-            for ax, (k, ttl) in zip(axes_det, det_map):
-                cname = keys.get(k, None)
-                if cname is None:  # skip missing
-                    ax.set_title(ttl + " (missing)")
-                    ax.grid(True, alpha=0.15)
-                    continue
-                _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma)
-                any_curve = True
+            # Detection row
+            for ax, key, ttl in [
+                (ax_det_total, "det_total", "Detection total"),
+                (ax_det_box,   "det_box",   "Box loss"),
+                (ax_det_dfl,   "det_dfl",   "DFL loss"),
+                (ax_det_cls,   "det_cls",   "Cls loss"),
+            ]:
+                cname = keys.get(key)
+                if cname is None:
+                    ax.set_title(ttl + " (missing)"); ax.grid(True, alpha=0.15)
+                else:
+                    _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma); any_curve = True
 
-            # SEGMENTATION (two rows; seg_total centered spanning rows; P3/P4/P5 by dice/bca)
-            if keys.get("seg_total", None):
-                _plot_one(ax_seg_total, x, df[keys["seg_total"]], label=f.stem, title="Seg total", sigma=smooth_sigma)
-                any_curve = True
+            # Segmentation rows
+            cname = keys.get("seg_total")
+            if cname is None:
+                ax_seg_total.set_title("Seg total (missing)"); ax_seg_total.grid(True, alpha=0.15)
             else:
-                ax_seg_total.set_title("Seg total (missing)")
-                ax_seg_total.grid(True, alpha=0.15)
+                _plot_one(ax_seg_total, x, df[cname], label=f.stem, title="Seg total", sigma=smooth_sigma); any_curve = True
 
-            # P3/P4/P5 Dice (top row of seg block)
-            for ax, name_key, ttl in [
+            for ax, key, ttl in [
                 (ax_p3_dice, "p3_dice", "P3 Dice"),
                 (ax_p4_dice, "p4_dice", "P4 Dice"),
                 (ax_p5_dice, "p5_dice", "P5 Dice"),
             ]:
-                cname = keys.get(name_key, None)
+                cname = keys.get(key)
                 if cname is None:
-                    ax.set_title(ttl + " (missing)")
-                    ax.grid(True, alpha=0.15)
-                    continue
-                _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma)
-                any_curve = True
+                    ax.set_title(ttl + " (missing)"); ax.grid(True, alpha=0.15)
+                else:
+                    _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma); any_curve = True
 
-            # P3/P4/P5 BCA (bottom row of seg block)
-            for ax, name_key, ttl in [
-                (ax_p3_bca, "p3_bca", "P3 BCA"),
-                (ax_p4_bca, "p4_bca", "P4 BCA"),
-                (ax_p5_bca, "p5_bca", "P5 BCA"),
+            for ax, key, ttl in [
+                (ax_p3_bce, "p3_bce", "P3 BCE"),
+                (ax_p4_bce, "p4_bce", "P4 BCE"),
+                (ax_p5_bce, "p5_bce", "P5 BCE"),
             ]:
-                cname = keys.get(name_key, None)
+                cname = keys.get(key)
                 if cname is None:
-                    ax.set_title(ttl + " (missing)")
-                    ax.grid(True, alpha=0.15)
-                    continue
-                _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma)
-                any_curve = True
+                    ax.set_title(ttl + " (missing)"); ax.grid(True, alpha=0.15)
+                else:
+                    _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma); any_curve = True
 
-            # METRICS (single row, 4 columns)
-            metrics_map = [
-                ("precision", "Precision"),
-                ("recall",    "Recall"),
-                ("map50",     r"mAP@0.50"),
-                ("map5095",   r"mAP@0.50:0.95"),
-            ]
-            for ax, (k, ttl) in zip([ax_prec, ax_rec, ax_map50, ax_map5095], metrics_map):
-                cname = keys.get(k, None)
+            # Metrics row
+            for ax, key, ttl in [
+                (ax_prec,   "precision", "Precision"),
+                (ax_rec,    "recall",    "Recall"),
+                (ax_map50,  "map50",     r"mAP@0.50"),
+                (ax_map5095,"map5095",   r"mAP@0.50:0.95"),
+            ]:
+                cname = keys.get(key)
                 if cname is None:
-                    ax.set_title(ttl + " (missing)")
-                    ax.grid(True, alpha=0.15)
-                    continue
-                _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma)
-                any_curve = True
+                    ax.set_title(ttl + " (missing)"); ax.grid(True, alpha=0.15)
+                else:
+                    _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma); any_curve = True
 
         except Exception as e:
             LOGGER.error(f"[plot_results] Plotting error for {f}: {e}")
 
-    # -------------------------
-    # Axis cosmetics & legends
-    # -------------------------
-    # Share X among blocks that use epochs/steps to keep ticks aligned
-    for ax in axes_det + [ax_seg_total, ax_p3_dice, ax_p4_dice, ax_p5_dice, ax_p3_bca, ax_p4_bca, ax_p5_bca,
-                          ax_prec, ax_rec, ax_map50, ax_map5095]:
-        ax.set_xlabel("Epoch")  # generic label; alias resolver covers other names but we display Epoch for clarity
+    # --------------------------------------------
+    # Cosmetics: labels and unified legend
+    # --------------------------------------------
+    # X labels only where useful (bottom row of each block)
+    for ax in [ax_det_total, ax_det_box, ax_det_dfl, ax_det_cls,
+               ax_p3_bce, ax_p4_bce, ax_p5_bce,
+               ax_prec, ax_rec, ax_map50, ax_map5095]:
+        ax.set_xlabel("Epoch")
 
-    # Put small legends on the last row of each block to avoid clutter
-    if any_curve:
-        # Detection legend (last axis of detection block)
-        axes_det[-1].legend(loc="upper right", fontsize=7, frameon=False, handlelength=2)
-        # Segmentation legends
-        ax_p5_bca.legend(loc="upper right", fontsize=7, frameon=False, handlelength=2)
-        # Metrics legend
-        ax_map5095.legend(loc="upper right", fontsize=7, frameon=False, handlelength=2)
+    # Global legend (bottom, outside all plots)
+    if legend_items:
+        handles = list(legend_items.values())
+        labels = list(legend_items.keys())
+        ncols = max(2, min(len(labels), 6))
+        fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, -0.015),
+                   ncol=ncols, frameon=False, handlelength=2.5, columnspacing=1.6)
 
-    # Tighten and save
+    # Tighten and save (extra bottom space for legend)
+    fig.subplots_adjust(left=0.08, right=0.99, top=0.98, bottom=0.12, wspace=0.55, hspace=0.82)
     fname = save_dir / "results.png"
     try:
         fig.savefig(fname, dpi=300, bbox_inches="tight", pad_inches=0.02)
@@ -1145,6 +1167,7 @@ def plot_results(
     if on_plot:
         on_plot(fname)
     LOGGER.info(f"[plot_results] Saved {fname}")
+
 
 
 def plt_color_scatter(v, f, bins: int = 20, cmap: str = "viridis", alpha: float = 0.8, edgecolors: str = "none"):
@@ -1270,3 +1293,4 @@ def feature_visualization(x, module_type: str, stage: int, n: int = 32, save_dir
             plt.savefig(f, dpi=300, bbox_inches="tight")
             plt.close()
             np.save(str(f.with_suffix(".npy")), x[0].cpu().numpy())  # npy save
+
