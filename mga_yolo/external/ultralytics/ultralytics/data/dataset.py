@@ -86,9 +86,17 @@ class YOLODataset(BaseDataset):
         self.use_segments = task == "segment"
         self.use_keypoints = task == "pose"
         self.use_obb = task == "obb"
-        self.data = data
+        # Ensure data is always a dict to avoid optional access issues
+        self.data = data or {}
         assert not (self.use_segments and self.use_keypoints), "Can not use both segments and keypoints."
-        super().__init__(*args, channels=self.data["channels"], **kwargs)
+        # Extract channels but avoid passing it to BaseDataset to prevent duplicate-value issues in static analysis
+        ch = kwargs.pop("channels", self.data.get("channels", 3))
+        super().__init__(*args, **kwargs)
+        # Patch channels-dependent fields post-init
+        self.channels = ch
+        self.cv2_flag = cv2.IMREAD_GRAYSCALE if ch == 1 else cv2.IMREAD_COLOR
+        # Debug saving counter for augmented masks/images
+        self._aug_save_count = 0
 
     def cache_labels(self, path: Path = Path("./labels.cache")) -> Dict:
         """
@@ -284,6 +292,20 @@ class YOLODataset(BaseDataset):
         else:
             segments = np.zeros((0, segment_resamples, 2), dtype=np.float32)
         label["instances"] = Instances(bboxes, segments, keypoints, bbox_format=bbox_format, normalized=normalized)
+
+        # Load per-image binary mask before any transforms so it can be augmented together
+        try:
+            data_cfg = getattr(self, "data", {}) or {}
+            data_root = data_cfg.get("dataset", None)
+            masks_dir = data_cfg.get("masks_dir", None)
+            mask_path = self._infer_mask_path(label.get("im_file", ""), data_root, masks_dir)
+            if mask_path is not None and mask_path.exists():
+                raw = cv2.imread(mask_path.as_posix(), cv2.IMREAD_GRAYSCALE)
+                if raw is not None:
+                    label["bin_mask"] = (raw > 0).astype(np.uint8)
+        except Exception as e:  # pragma: no cover
+            LOGGER.debug(f"Mask preload failed for {label.get('im_file','')}: {e}")
+
         return label
 
     @staticmethod
@@ -381,46 +403,42 @@ class YOLODataset(BaseDataset):
         return cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
-        sample = super().__getitem__(index)  # dict with keys including 'img', 'im_file', etc.
-        # Attempt to load segmentation mask if dataset config provides paths
-        data_cfg = getattr(self, 'data', {}) or {}
-        data_root = data_cfg.get('dataset', None)
-        masks_dir = data_cfg.get('masks_dir', None)
-        mask_path = self._infer_mask_path(sample.get('im_file', ''), data_root, masks_dir)
-        multi_masks = []
-        if mask_path is not None and mask_path.exists():
-            try:
-                raw = cv2.imread(mask_path.as_posix(), cv2.IMREAD_GRAYSCALE)
-                if raw is not None:
-                    bin_mask = (raw > 0).astype(np.uint8)
-                    # Optional on-disk cache per (file, stride, mtime, method)
-                    use_cache = os.getenv("MGA_MASK_CACHE", "1") not in {"0", "false", "False"}
-                    method = os.getenv("MGA_MASK_METHOD", "skeleton_bresenham").lower()
-                    mtime = int(mask_path.stat().st_mtime)
-                    cache_dir = mask_path.parent / ".mga_mask_cache" / method
-                    if use_cache:
-                        cache_dir.mkdir(parents=True, exist_ok=True)
-                    for s in (8, 16, 32):
-                        ds_np = None
-                        if use_cache:
-                            cpath = cache_dir / f"{mask_path.stem}_f{s}_{mtime}.npy"
-                            if cpath.exists():
-                                try:
-                                    ds_np = np.load(cpath.as_posix())
-                                except Exception:
-                                    ds_np = None
-                        if ds_np is None:
-                            ds_np = self._downsample_mask(bin_mask, s)
-                            if use_cache:
-                                try:
-                                    np.save(cpath.as_posix(), ds_np, allow_pickle=False)
-                                except Exception:
-                                    pass
-                        multi_masks.append(torch.from_numpy(ds_np[None, ...].astype(np.float32)))  # (1,Hs,Ws)
-            except Exception as e:  # pragma: no cover
-                LOGGER.debug(f"Mask load failed for {mask_path}: {e}")
-        if multi_masks:
-            sample['masks_multi'] = multi_masks  # list[Tensor]
+        sample = super().__getitem__(index)
+        # If an augmented binary mask is present, downsample to model scales
+        bin_mask = sample.get("bin_mask", None)
+        if isinstance(bin_mask, np.ndarray):
+            multi_masks: List[torch.Tensor] = []
+            for s in (8, 16, 32):
+                ds_np = self._downsample_mask(bin_mask, s)
+                multi_masks.append(torch.from_numpy(ds_np[None, ...].astype(np.float32)))  # (1,Hs,Ws)
+            sample["masks_multi"] = multi_masks
+
+            # Optional debugging: save augmented image/mask pairs
+            out_dir = os.getenv("MGA_SAVE_AUG_MASKS", "")
+            max_saves = int(os.getenv("MGA_SAVE_MAX", "0") or 0)
+            if out_dir:
+                try:
+                    Path(out_dir).mkdir(parents=True, exist_ok=True)
+                    do_save = max_saves <= 0 or (self._aug_save_count < max_saves)
+                    if do_save:
+                        stem = Path(sample.get("im_file", f"idx_{index}")).stem
+                        # Save mask (uint8 0/255)
+                        m = (bin_mask * 255).astype(np.uint8)
+                        cv2.imwrite(str(Path(out_dir) / f"{stem}_mask.png"), m)
+                        # Save image as uint8 BGR
+                        img_t: torch.Tensor = sample.get("img")  # (C,H,W)
+                        if isinstance(img_t, torch.Tensor):
+                            img_np = (img_t.detach().cpu().numpy().transpose(1, 2, 0))
+                            if img_np.dtype != np.uint8:
+                                # Format._format_img kept uint8; but if float, scale back
+                                img_show = np.clip(img_np, 0, 255).astype(np.uint8)
+                            else:
+                                img_show = img_np
+                            # If image is CHW in RGB/BGR already, trust as BGR for saving
+                            cv2.imwrite(str(Path(out_dir) / f"{stem}_img.png"), img_show)
+                        self._aug_save_count += 1
+                except Exception as e:  # pragma: no cover
+                    LOGGER.debug(f"Failed saving augmented mask/image for index {index}: {e}")
         return sample
 
     @staticmethod

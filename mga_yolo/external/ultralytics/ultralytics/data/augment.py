@@ -622,15 +622,19 @@ class Mosaic(BaseMixTransform):
         """
         mosaic_labels = []
         s = self.imgsz
+        mask3 = None
         for i in range(3):
             labels_patch = labels if i == 0 else labels["mix_labels"][i - 1]
             # Load image
             img = labels_patch["img"]
+            mask = labels_patch.get("bin_mask", None)
             h, w = labels_patch.pop("resized_shape")
 
             # Place img in img3
             if i == 0:  # center
                 img3 = np.full((s * 3, s * 3, img.shape[2]), 114, dtype=np.uint8)  # base image with 3 tiles
+                if mask is not None:
+                    mask3 = np.zeros((s * 3, s * 3), dtype=np.uint8)
                 h0, w0 = h, w
                 c = s, s, s + w, s + h  # xmin, ymin, xmax, ymax (base) coordinates
             elif i == 1:  # right
@@ -642,6 +646,10 @@ class Mosaic(BaseMixTransform):
             x1, y1, x2, y2 = (max(x, 0) for x in c)  # allocate coordinates
 
             img3[y1:y2, x1:x2] = img[y1 - padh :, x1 - padw :]  # img3[ymin:ymax, xmin:xmax]
+            if mask is not None:
+                if mask3 is None:
+                    mask3 = np.zeros((s * 3, s * 3), dtype=np.uint8)
+                mask3[y1:y2, x1:x2] = mask[y1 - padh :, x1 - padw :]
             # hp, wp = h, w  # height, width previous for next iteration
 
             # Labels assuming imgsz*2 mosaic size
@@ -650,6 +658,8 @@ class Mosaic(BaseMixTransform):
         final_labels = self._cat_labels(mosaic_labels)
 
         final_labels["img"] = img3[-self.border[0] : self.border[0], -self.border[1] : self.border[1]]
+        if mask3 is not None:
+            final_labels["bin_mask"] = mask3[-self.border[0] : self.border[0], -self.border[1] : self.border[1]]
         return final_labels
 
     def _mosaic4(self, labels: Dict[str, Any]) -> Dict[str, Any]:
@@ -679,15 +689,19 @@ class Mosaic(BaseMixTransform):
         mosaic_labels = []
         s = self.imgsz
         yc, xc = (int(random.uniform(-x, 2 * s + x)) for x in self.border)  # mosaic center x, y
+        mask4 = None
         for i in range(4):
             labels_patch = labels if i == 0 else labels["mix_labels"][i - 1]
             # Load image
             img = labels_patch["img"]
+            mask = labels_patch.get("bin_mask", None)
             h, w = labels_patch.pop("resized_shape")
 
             # Place img in img4
             if i == 0:  # top left
                 img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+                if mask is not None:
+                    mask4 = np.zeros((s * 2, s * 2), dtype=np.uint8)
                 x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
                 x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
             elif i == 1:  # top right
@@ -706,8 +720,14 @@ class Mosaic(BaseMixTransform):
 
             labels_patch = self._update_labels(labels_patch, padw, padh)
             mosaic_labels.append(labels_patch)
+            if mask is not None:
+                if mask4 is None:
+                    mask4 = np.zeros((s * 2, s * 2), dtype=np.uint8)
+                mask4[y1a:y2a, x1a:x2a] = mask[y1b:y2b, x1b:x2b]
         final_labels = self._cat_labels(mosaic_labels)
         final_labels["img"] = img4
+        if mask4 is not None:
+            final_labels["bin_mask"] = mask4
         return final_labels
 
     def _mosaic9(self, labels: Dict[str, Any]) -> Dict[str, Any]:
@@ -739,10 +759,12 @@ class Mosaic(BaseMixTransform):
         mosaic_labels = []
         s = self.imgsz
         hp, wp = -1, -1  # height, width previous
+        mask9 = None
         for i in range(9):
             labels_patch = labels if i == 0 else labels["mix_labels"][i - 1]
             # Load image
             img = labels_patch["img"]
+            mask = labels_patch.get("bin_mask", None)
             h, w = labels_patch.pop("resized_shape")
 
             # Place img in img9
@@ -777,9 +799,15 @@ class Mosaic(BaseMixTransform):
             # Labels assuming imgsz*2 mosaic size
             labels_patch = self._update_labels(labels_patch, padw + self.border[0], padh + self.border[1])
             mosaic_labels.append(labels_patch)
+            if mask is not None:
+                if mask9 is None:
+                    mask9 = np.zeros((s * 3, s * 3), dtype=np.uint8)
+                mask9[y1:y2, x1:x2] = mask[y1 - padh :, x1 - padw :]
         final_labels = self._cat_labels(mosaic_labels)
 
         final_labels["img"] = img9[-self.border[0] : self.border[0], -self.border[1] : self.border[1]]
+        if mask9 is not None:
+            final_labels["bin_mask"] = mask9[-self.border[0] : self.border[0], -self.border[1] : self.border[1]]
         return final_labels
 
     @staticmethod
@@ -922,6 +950,14 @@ class MixUp(BaseMixTransform):
         r = np.random.beta(32.0, 32.0)  # mixup ratio, alpha=beta=32.0
         labels2 = labels["mix_labels"][0]
         labels["img"] = (labels["img"] * r + labels2["img"] * (1 - r)).astype(np.uint8)
+        # Merge binary masks if present by logical OR (binary target)
+        m1 = labels.get("bin_mask", None)
+        m2 = labels2.get("bin_mask", None)
+        if isinstance(m1, np.ndarray) and isinstance(m2, np.ndarray):
+            # Ensure same size (they should be after pre_transform)
+            if m1.shape != m2.shape:
+                m2 = cv2.resize(m2, (m1.shape[1], m1.shape[0]), interpolation=cv2.INTER_NEAREST)
+            labels["bin_mask"] = np.maximum(m1, m2).astype(np.uint8)
         labels["instances"] = Instances.concatenate([labels["instances"], labels2["instances"]], axis=0)
         labels["cls"] = np.concatenate([labels["cls"], labels2["cls"]], 0)
         return labels
@@ -1034,6 +1070,15 @@ class CutMix(BaseMixTransform):
         # Apply CutMix
         x1, y1, x2, y2 = area.astype(np.int32)
         labels["img"][y1:y2, x1:x2] = labels2["img"][y1:y2, x1:x2]
+        # Copy corresponding region in binary mask if present
+        if isinstance(labels.get("bin_mask", None), np.ndarray) and isinstance(labels2.get("bin_mask", None), np.ndarray):
+            m1 = labels["bin_mask"]
+            m2 = labels2["bin_mask"]
+            if m1.shape != m2.shape:
+                m2 = cv2.resize(m2, (m1.shape[1], m1.shape[0]), interpolation=cv2.INTER_NEAREST)
+            m1 = m1.copy()
+            m1[y1:y2, x1:x2] = m2[y1:y2, x1:x2]
+            labels["bin_mask"] = m1.astype(np.uint8)
 
         # Restrain instances2 to the random bounding border
         instances2.add_padding(-x1, -y1)
@@ -1325,6 +1370,7 @@ class RandomPerspective:
         labels.pop("ratio_pad", None)  # do not need ratio pad
 
         img = labels["img"]
+        bin_mask = labels.get("bin_mask", None)
         cls = labels["cls"]
         instances = labels.pop("instances")
         # Make sure the coord formats are right
@@ -1336,6 +1382,11 @@ class RandomPerspective:
         # M is affine matrix
         # Scale for func:`box_candidates`
         img, M, scale = self.affine_transform(img, border)
+        if bin_mask is not None:
+            if self.perspective:
+                bin_mask = cv2.warpPerspective(bin_mask, M, dsize=self.size, flags=cv2.INTER_NEAREST, borderValue=0)
+            else:
+                bin_mask = cv2.warpAffine(bin_mask, M[:2], dsize=self.size, flags=cv2.INTER_NEAREST, borderValue=0)
 
         bboxes = self.apply_bboxes(instances.bboxes, M)
 
@@ -1360,6 +1411,8 @@ class RandomPerspective:
         labels["instances"] = new_instances[i]
         labels["cls"] = cls[i]
         labels["img"] = img
+        if bin_mask is not None:
+            labels["bin_mask"] = bin_mask.astype(np.uint8)
         labels["resized_shape"] = img.shape[:2]
         return labels
 
@@ -1545,27 +1598,14 @@ class RandomFlip:
         """
         Apply random flip to an image and update any instances like bounding boxes or keypoints accordingly.
 
-        This method randomly flips the input image either horizontally or vertically based on the initialized
-        probability and direction. It also updates the corresponding instances (bounding boxes, keypoints) to
-        match the flipped image.
-
         Args:
-            labels (Dict[str, Any]): A dictionary containing the following keys:
-                'img' (np.ndarray): The image to be flipped.
-                'instances' (ultralytics.utils.instance.Instances): An object containing bounding boxes and
-                    optionally keypoints.
+            labels (Dict[str, Any]): Dict with keys 'img' and 'instances'.
 
         Returns:
-            (Dict[str, Any]): The same dictionary with the flipped image and updated instances:
-                'img' (np.ndarray): The flipped image.
-                'instances' (ultralytics.utils.instance.Instances): Updated instances matching the flipped image.
-
-        Examples:
-            >>> labels = {"img": np.random.rand(640, 640, 3), "instances": Instances(...)}
-            >>> random_flip = RandomFlip(p=0.5, direction="horizontal")
-            >>> flipped_labels = random_flip(labels)
+            Dict[str, Any]: Updated labels with flipped image/instances and optional bin_mask.
         """
         img = labels["img"]
+        bin_mask = labels.get("bin_mask", None)
         instances = labels.pop("instances")
         instances.convert_bbox(format="xywh")
         h, w = img.shape[:2]
@@ -1576,15 +1616,21 @@ class RandomFlip:
         if self.direction == "vertical" and random.random() < self.p:
             img = np.flipud(img)
             instances.flipud(h)
+            if bin_mask is not None:
+                bin_mask = np.flipud(bin_mask)
             if self.flip_idx is not None and instances.keypoints is not None:
                 instances.keypoints = np.ascontiguousarray(instances.keypoints[:, self.flip_idx, :])
         if self.direction == "horizontal" and random.random() < self.p:
             img = np.fliplr(img)
             instances.fliplr(w)
+            if bin_mask is not None:
+                bin_mask = np.fliplr(bin_mask)
             if self.flip_idx is not None and instances.keypoints is not None:
                 instances.keypoints = np.ascontiguousarray(instances.keypoints[:, self.flip_idx, :])
         labels["img"] = np.ascontiguousarray(img)
         labels["instances"] = instances
+        if bin_mask is not None:
+            labels["bin_mask"] = np.ascontiguousarray(bin_mask.astype(np.uint8))
         return labels
 
 
@@ -1734,6 +1780,17 @@ class LetterBox:
 
         if len(labels):
             labels = self._update_labels(labels, ratio, left, top)
+            # Propagate binary mask through resize + pad using nearest and 0 padding
+            if "bin_mask" in labels and isinstance(labels["bin_mask"], np.ndarray):
+                m = labels["bin_mask"]
+                if m.shape[::-1] != tuple(new_unpad):
+                    m = cv2.resize(m, new_unpad, interpolation=cv2.INTER_NEAREST)
+                if self.center:
+                    m = cv2.copyMakeBorder(m, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+                else:
+                    # top-left anchoring: pad only bottom and right
+                    m = cv2.copyMakeBorder(m, 0, bottom, 0, right, cv2.BORDER_CONSTANT, value=0)
+                labels["bin_mask"] = m.astype(np.uint8)
             labels["img"] = img
             labels["resized_shape"] = new_shape
             return labels

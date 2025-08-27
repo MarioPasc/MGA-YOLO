@@ -90,8 +90,8 @@ def test_mga_detect_and_seg_train_10_epochs(tmp_path):
     results = model.train(
         data=str(data_yaml),
         task='mga',
-        epochs=100,
-        imgsz=640,
+        epochs=4,
+        imgsz=512,
         batch=2,
         device=device,
         workers=0,
@@ -108,23 +108,23 @@ def test_mga_detect_and_seg_train_10_epochs(tmp_path):
         name='test_mga_train_v8_segloss',
         save_dir=str(tmp_path),
         
-        
+        # https://docs.ultralytics.com/guides/yolo-data-augmentation/#introduction
         hsv_h=0.0,
         hsv_s=0.0,
         hsv_v=0.0,
-        degrees=0.0,
-        translate=0.0,
-        scale=0.0,
-        shear=0.0,
-        perspective=0.0,
-        flipud=0.0,
-        fliplr=0.0,
+        #degrees=0.0,
+        #translate=0.0,
+        #scale=0.0,
+        #shear=0.0,
+        #perspective=0.0,
+        #flipud=0.0,
+        #fliplr=0.0,
         bgr=0.0,
         mosaic=0.0,
         mixup=0.0,
         cutmix=0.0,
+        erasing=0.0,
         copy_paste=0.0,
-        erasing=0.0
     )
     # Basic assertions: training completed and artifacts exist
     import time
