@@ -4,6 +4,7 @@ from typing import Any, Dict
 import torch
 
 from mga_yolo.external.ultralytics.ultralytics import YOLO
+from mga_yolo.utils.env import apply_mga_env_from_config
 
 
 def train(config: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -16,6 +17,8 @@ def train(config: Dict[str, Any]) -> Dict[str, Any] | None:
 	- any other ultralytics YOLO.train kwargs (epochs, imgsz, data, batch, etc.)
 	"""
 	cfg = dict(config) if config else {}
+	# 1) Export MGA_* keys to environment and clean them from cfg
+	cfg = apply_mga_env_from_config(cfg, prefix="MGA_", overwrite=True)
 	if "model" not in cfg:
 		raise ValueError("config must include 'model' entry (path to model YAML/weights)")
 	model_path = str(cfg.pop("model"))
@@ -25,24 +28,13 @@ def train(config: Dict[str, Any]) -> Dict[str, Any] | None:
 	if "device" not in cfg:
 		cfg["device"] = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-	# Remove control keys not meant for YOLO.train kwargs
-	cfg.pop("mode", None)
-
-	# Instantiate YOLO. Some environments may not include 'mga' in task map at _new time.
-	# Fallback to 'detect' and then set task back to 'mga' prior to training.
-	try:
-		yolo = YOLO(model_path, task=task, verbose=bool(cfg.get("verbose", True)))
-	except NotImplementedError:
-		yolo = YOLO(model_path, task="detect", verbose=bool(cfg.get("verbose", True)))
-		# Ensure downstream trainer selection uses MGA path
-		setattr(yolo, "task", "mga")
+	# Instantiate YOLO.
+	yolo = YOLO(model_path, task=task, verbose=bool(cfg.get("verbose", True)))
 
 	results = yolo.train(**cfg)
 
 	# Prefer returning validator metrics if present
 	try:
-		trainer = getattr(yolo, "trainer", None)
-		validator = getattr(trainer, "validator", None) if trainer is not None else None
-		return getattr(validator, "metrics", None)
+		return results
 	except Exception:
 		return results if isinstance(results, dict) else None

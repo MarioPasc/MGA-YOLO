@@ -22,6 +22,7 @@ from ultralytics.utils import ROOT, YAML
 
 # New, MGA Model
 from mga_yolo.model.model import MGAModel
+from mga_yolo.model.trainer import MGATrainer
 from mga_yolo.model.predictor import MGAPredictor
 from mga_yolo.model.validator import MGAValidator
 
@@ -145,8 +146,7 @@ class YOLO(Model):
             # MGA does not introduce a new task type yet; it reuses 'detect'.
             "mga": {
                 "model": MGAModel,
-                # Trainer imported lazily to avoid circular import during package init
-                "trainer": __import__('mga_yolo.engine.train', fromlist=['MGATrainer']).MGATrainer,  # type: ignore
+                "trainer": MGATrainer,  
                 "validator": MGAValidator,
                 "predictor": MGAPredictor,
             },  

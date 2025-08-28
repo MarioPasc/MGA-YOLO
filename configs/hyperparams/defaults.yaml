@@ -1,8 +1,27 @@
 # MGA-YOLO default configuration
 
+# Available options for export:
+#  Env MGA_MASK_METHOD controls algorithm:
+#    - 'nearest'  : super fast but low quality (for CI/smoke)
+#    - 'area'     : fast high-quality (INTER_AREA + >0 + optional close)
+#    - 'maxpool'  : block-wise max pooling
+#    - 'pyrdown'  : repeated pyrDown (power-of-two strides)
+#    - otherwise  : use connectivity-preserving utility (skeleton_bresenham) *Really Slow*
+#  Env MGA_MASK_BRIDGE=0 disables 3x3 closing bridge (default on)
+#  Env MGA_MASK_THRESH sets threshold for 'area' method (default 0.0, i.e., >0)
+#  Env MGA_SAVE_AUG_MASKS=/home/mpascual/research/code/MGA-YOLO/tests Save a batch of masks/images to check augmentation
+#  Env MGA_SAVE_MAX=50 Max saving per training for debugging pourposes
+
 task: mga 
 mode: train 
 model: configs/models/yolov8_test_segment_heads.yaml
+data: configs/data/data.yaml 
+
+# Mask-Related Hyperparameters
+MGA_MASK_METHOD: area
+MGA_MASK_BRIDGE: 0
+MGA_MASK_THRESH: 0.0
+
 
 # Hyperparameters ------------------------------------------------------------------------------------------------------
 
@@ -14,16 +33,18 @@ weight_decay: 0.0005 # (float) optimizer weight decay 5e-4
 warmup_epochs: 3.0 # (float) warmup epochs (fractions ok)
 warmup_momentum: 0.8 # (float) warmup initial momentum
 warmup_bias_lr: 0.1 # (float) warmup initial bias lr
+optimizer: auto # (str) optimizer to use, choices=[SGD, Adam, Adamax, AdamW, NAdam, RAdam, RMSProp, auto]
+
+nbs: 64 # (int) nominal batch size
+
 box: 7.5 # (float) box loss gain
 cls: 0.5 # (float) cls loss gain (scale with pixels)
 dfl: 1.5 # (float) dfl loss gain
-optimizer: auto # (str) optimizer to use, choices=[SGD, Adam, Adamax, AdamW, NAdam, RAdam, RMSProp, auto]
-nbs: 64 # (int) nominal batch size
+seg_bce_weight: 1.0 # (float) Weight of Binary Cross-Entropy loss on segmentation loss
+seg_dice_weight: 1.0 # (float) Weight of Dice loss on segmentation loss
 
 ## Segmentation head-related hyperparameters ##
 seg_enable: True # Enable segmentation heads
-seg_bce_weight: 1.0 # Weight of Binary Cross-Entropy loss on segmentation loss
-seg_dice_weight: 1.0 # Weight of Dice loss on segmentation loss
 seg_scale_weights: [1.0, 1.0, 1.0] # Scale weights for segmentation loss
 seg_loss_lambda: 1.0 # Loss lambda for segmentation loss when combined with detection loss
 seg_smooth: 1.0 # Smoothing factor for segmentation
@@ -53,18 +74,17 @@ pose: 0.0 # (float) pose loss gain
 kobj: 0.0 # (float) keypoint obj loss gain
 
 # Train settings -------------------------------------------------------------------------------------------------------
-data: # (str, optional) path to data file, i.e. coco8.yaml
 epochs: 100 # (int) number of epochs to train for
 time: # (float, optional) number of hours to train for, overrides epochs if supplied
 patience: 100 # (int) epochs to wait for no observable improvement for early stopping of training
-batch: 16 # (int) number of images per batch (-1 for AutoBatch)
+batch: 4 # (int) number of images per batch (-1 for AutoBatch)
 imgsz: 512 # (int | list) input images size as int for train and val modes, or list[h,w] for predict and export modes
 save: True # (bool) save train checkpoints and predict results
 save_period: -1 # (int) Save checkpoint every x epochs (disabled if < 1)
 cache: False # (bool) True/ram, disk or False. Use cache for data loading
 device: 0 # (int | str | list) device: CUDA device=0 or [0,1,2,3] or "cpu/mps" or -1 or [-1,-1] to auto-select idle GPUs
-workers: 8 # (int) number of worker threads for data loading (per RANK if DDP)
-project: "MGA_YOLO" # (str, optional) project name
+workers: 0 # (int) number of worker threads for data loading (per RANK if DDP)
+project: "/home/mpascual/research/results/mga/MGA_YOLO" # (str, optional) project name
 name: "train_mga_yolo" # (str, optional) experiment name, results saved to 'project/name' directory
 exist_ok: False # (bool) whether to overwrite existing experiment
 pretrained: True # (bool | str) whether to use a pretrained model (bool) or a model to load weights from (str)
