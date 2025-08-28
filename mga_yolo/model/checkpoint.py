@@ -34,7 +34,7 @@ def rebuild_mga_model_from_minimal_ckpt(
     Returns:
         (model, ckpt): The reconstructed model (eval, FP32, on CPU) and the raw checkpoint dict.
     """
-    from mga_yolo.engine.model import MGAModel
+    from mga_yolo.model.model import MGAModel
 
     p = Path(ckpt_path)
     ckpt = _safe_torch_load(p)

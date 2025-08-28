@@ -21,9 +21,9 @@ from ultralytics.nn.tasks import (
 from ultralytics.utils import ROOT, YAML
 
 # New, MGA Model
-from mga_yolo.engine.model import MGAModel
-from mga_yolo.engine.predict import MGAPredictor
-from mga_yolo.engine.val import MGAValidator
+from mga_yolo.model.model import MGAModel
+from mga_yolo.model.predictor import MGAPredictor
+from mga_yolo.model.validator import MGAValidator
 
 class YOLO(Model):
     """

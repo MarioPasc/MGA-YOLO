@@ -4,11 +4,11 @@ from typing import Any, Dict, List, Tuple, Union
 from types import SimpleNamespace
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor
 
 from mga_yolo.external.ultralytics.ultralytics.nn.tasks import DetectionModel
 from mga_yolo.external.ultralytics.ultralytics.nn.modules import Detect
-from mga_yolo.nn.modules.seg import MGAMaskHead
+from mga_yolo.nn.modules.segmentation import MGAMaskHead
 from mga_yolo.nn.losses.segmentation import SegmentationLoss, SegLossConfig
 from mga_yolo.external.ultralytics.ultralytics.utils.loss import v8DetectionLoss
 

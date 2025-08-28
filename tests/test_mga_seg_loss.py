@@ -2,8 +2,8 @@ from types import SimpleNamespace
 from pathlib import Path
 import torch
 import pytest
-from mga_yolo.engine.model import MGAModel
-from mga_yolo.engine.train import MGATrainer
+from mga_yolo.model.model import MGAModel
+from mga_yolo.model.trainer import MGATrainer
 from mga_yolo.external.ultralytics.ultralytics import YOLO
 
 
@@ -90,9 +90,9 @@ def test_mga_detect_and_seg_train_10_epochs(tmp_path):
     results = model.train(
         data=str(data_yaml),
         task='mga',
-        epochs=4,
+        epochs=500,
         imgsz=512,
-        batch=2,
+        batch=4,
         device=device,
         workers=0,
         save=True,

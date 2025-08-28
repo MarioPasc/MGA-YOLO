@@ -53,6 +53,8 @@ include = [
   "mga_yolo.*",
   "ultralytics",
   "ultralytics.*",
+  "cli",
+  "cli.*",
 ]
 
 [tool.setuptools.package-dir]
@@ -63,4 +65,4 @@ ultralytics = "mga_yolo/external/ultralytics/ultralytics"
 "ultralytics" = ["*"]
 
 [project.scripts]
-mga-ckpt = "cli.mga_ckpt:main"
+mga_train = "cli.mga_train:app"

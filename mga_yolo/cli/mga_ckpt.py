@@ -5,7 +5,7 @@ from typing import Optional
 
 import typer
 
-from mga_yolo.engine.checkpoint import rebuild_mga_model_from_minimal_ckpt
+from mga_yolo.model.checkpoint import rebuild_mga_model_from_minimal_ckpt
 
 
 app = typer.Typer(help="MGA-YOLO checkpoint utilities")

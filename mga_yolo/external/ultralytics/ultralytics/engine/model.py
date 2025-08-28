@@ -23,7 +23,6 @@ from ultralytics.utils import (
     checks,
 )
 
-
 class Model(torch.nn.Module):
     """
     A base class for implementing YOLO models, unifying APIs across different model types.
@@ -258,7 +257,29 @@ class Model(torch.nn.Module):
         cfg_dict = yaml_model_load(cfg)
         self.cfg = cfg
         self.task = task or guess_model_task(cfg_dict)
-        self.model = (model or self._smart_load("model"))(cfg_dict, verbose=verbose and RANK == -1)  # build model
+        # Build model, allowing custom 'mga' task even if the base task_map doesn't define it.
+        if model is not None:
+            build_cls = model
+        else:
+            try:
+                build_cls = self._smart_load("model")
+            except NotImplementedError as e:
+                # Fallback: if requesting MGA on a base Model variant that doesn't expose an
+                # 'mga' task_map entry, construct MGAModel directly.
+                if str(self.task).lower() == "mga":
+                    try:
+                        build_cls = __import__(
+                            "mga_yolo.model.model", fromlist=["MGAModel"]
+                        ).MGAModel
+                    except Exception as imp_err:
+                        # Re-raise the original error with extra context
+                        raise NotImplementedError(
+                            "'Model' could not initialize an MGA model because neither task_map provides it "
+                            "nor could MGAModel be imported."
+                        ) from imp_err
+                else:
+                    raise
+        self.model = build_cls(cfg_dict, verbose=verbose and RANK == -1)  # build model
         self.overrides["model"] = self.cfg
         self.overrides["task"] = self.task
 
@@ -791,8 +812,8 @@ class Model(torch.nn.Module):
             args["resume"] = self.ckpt_path
 
         # Use custom MGATrainer if model is an MGA model and no explicit trainer provided
-        if trainer is None and isinstance(self.model, (__import__('mga_yolo.engine.model', fromlist=['MGAModel']).MGAModel,)):
-            from mga_yolo.engine.train import MGATrainer  # local import to avoid hard dependency for non-MGA usage
+        if trainer is None and isinstance(self.model, (__import__('mga_yolo.model.model', fromlist=['MGAModel']).MGAModel,)):
+            from mga_yolo.model.trainer import MGATrainer  # local import to avoid hard dependency for non-MGA usage
             trainer_cls = MGATrainer
         else:
             trainer_cls = trainer or self._smart_load("trainer")
@@ -816,7 +837,7 @@ class Model(torch.nn.Module):
                     except Exception as _primary_e:
                         # Try MGA minimal checkpoint fallback (ema_state_dict/model_state_dict only)
                         try:
-                            from mga_yolo.engine.checkpoint import rebuild_mga_model_from_minimal_ckpt
+                            from mga_yolo.model.checkpoint import rebuild_mga_model_from_minimal_ckpt
                             # Use current model.yaml as topology reference
                             yaml_path = getattr(self.model, "yaml", None) or getattr(self.trainer.model, "yaml", None)
                             if yaml_path is None:

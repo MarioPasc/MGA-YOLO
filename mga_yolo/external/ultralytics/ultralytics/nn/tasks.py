@@ -70,7 +70,7 @@ from ultralytics.nn.modules import (
     v10Detect,
 )
 try:  # MGA custom module
-    from mga_yolo.nn.modules.seg import MGAMaskHead  # noqa: F401
+    from mga_yolo.nn.modules.segmentation import MGAMaskHead  # noqa: F401
 except Exception:
     MGAMaskHead = None  # type: ignore
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, YAML, colorstr, emojis

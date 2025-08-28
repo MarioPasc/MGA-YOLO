@@ -1,8 +1,8 @@
 from pathlib import Path
 import torch
 
-from mga_yolo.engine.model import MGAModel
-from mga_yolo.engine.checkpoint import rebuild_mga_model_from_minimal_ckpt
+from mga_yolo.model.model import MGAModel
+from mga_yolo.model.checkpoint import rebuild_mga_model_from_minimal_ckpt
 
 
 def test_rebuild_mga_model_from_minimal_ckpt(tmp_path: Path):

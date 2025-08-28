@@ -6,4 +6,4 @@ val: detection/images/val
 test: detection/images/test  
 masks_dir: masks
 # Required by Ultralytics: provide class names or nc
-names: {0: vessel}
+names: {0: stenosis}

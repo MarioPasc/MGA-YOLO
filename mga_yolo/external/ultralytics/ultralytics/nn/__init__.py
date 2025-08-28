@@ -16,7 +16,7 @@ from .tasks import (
 
 # Import custom MGA modules so they are available to parse_model via globals()
 try:  # safe import in case MGA modules removed
-    from mga_yolo.nn.modules.seg import MGAMaskHead  # noqa: F401
+    from mga_yolo.nn.modules.segmentation import MGAMaskHead  # noqa: F401
 except Exception:  # pragma: no cover - non-fatal
     MGAMaskHead = None  # type: ignore
 
