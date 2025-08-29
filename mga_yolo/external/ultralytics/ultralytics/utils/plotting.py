@@ -865,7 +865,7 @@ def plot_results(
     classify: bool = False,
     on_plot: Optional[Callable] = None,
     smooth_sigma: float = 3.0,
-    separator_offset: float = 0.7,  
+    separator_offset: float = 1,  
 ):
 
     """
@@ -890,7 +890,7 @@ def plot_results(
     # -------------------------
     try:
         import scienceplots  # noqa: F401
-        plt.style.use(["science", "ieee"])
+        plt.style.use(["science"])
         plt.rcParams.update({
             "font.size": 8,
             "font.family": "serif",
@@ -923,30 +923,40 @@ def plot_results(
         # x-axis
         "x": ["epoch", "Epoch", "step", "Step", "iter", "iteration"],
 
-        # Detection losses
-        "det_total": ["train/det/total", "val/det/total", "train/total_loss", "loss/det_total",
-                      "det_total", "train/loss", "loss/total", "total_loss"],
-        "det_box":   ["train/det/box", "val/det/box", "train/box", "val/box",
-                      "loss/box", "train/box_loss", "box_loss", "box"],
-        "det_dfl":   ["train/det/dfl", "val/det/dfl", "train/dfl", "val/dfl",
-                      "loss/dfl", "train/dfl_loss", "dfl_loss", "dfl"],
-        "det_cls":   ["train/det/cls", "val/det/cls", "train/cls", "val/cls",
-                      "loss/cls", "train/cls_loss", "cls_loss", "cls"],
+        # --- Detection losses (TRAIN / VAL explicit) ---
+        "train_det_total": ["train/det/total", "train/total_loss", "train/loss", "train/total", "train/total_det"],
+        "val_det_total":   ["val/det/total",   "val/total_loss",   "val/loss",   "val/total",   "val/total_det"],
 
-        # Segmentation totals
-        "seg_total": ["train/seg/total", "train/seg_total", "val/seg/total", "val/seg_total",
-                      "loss/seg_total", "seg_total", "loss/seg", "train/seg_loss", "seg_loss"],
+        "train_det_box": ["train/det/box", "train/box", "train/box_loss", "loss/train/box"],
+        "val_det_box":   ["val/det/box",   "val/box",   "val/box_loss",   "loss/val/box"],
 
-        # Segmentation scales — Dice and BCE (accept *bca* as synonym if present)
-        "p3_dice": ["train/seg/p3_dice", "val/seg/p3_dice", "p3_dice", "seg/p3_dice", "loss/p3_dice"],
-        "p4_dice": ["train/seg/p4_dice", "val/seg/p4_dice", "p4_dice", "seg/p4_dice", "loss/p4_dice"],
-        "p5_dice": ["train/seg/p5_dice", "val/seg/p5_dice", "p5_dice", "seg/p5_dice", "loss/p5_dice"],
+        "train_det_dfl": ["train/det/dfl", "train/dfl", "train/dfl_loss", "loss/train/dfl"],
+        "val_det_dfl":   ["val/det/dfl",   "val/dfl",   "val/dfl_loss",   "loss/val/dfl"],
 
-        "p3_bce":  ["train/seg/p3_bce",  "val/seg/p3_bce",  "p3_bce",  "train/seg/p3_bca", "p3_bca", "seg/p3_bca"],
-        "p4_bce":  ["train/seg/p4_bce",  "val/seg/p4_bce",  "p4_bce",  "train/seg/p4_bca", "p4_bca", "seg/p4_bca"],
-        "p5_bce":  ["train/seg/p5_bce",  "val/seg/p5_bce",  "p5_bce",  "train/seg/p5_bca", "p5_bca", "seg/p5_bca"],
+        "train_det_cls": ["train/det/cls", "train/cls", "train/cls_loss", "loss/train/cls"],
+        "val_det_cls":   ["val/det/cls",   "val/cls",   "val/cls_loss",   "loss/val/cls"],
 
-        # Metrics
+        # --- Segmentation totals (TRAIN / VAL explicit) ---
+        "train_seg_total": ["train/seg/total", "train/seg_total", "train/seg_loss", "loss/train/seg_total"],
+        "val_seg_total":   ["val/seg/total",   "val/seg_total",   "val/seg_loss",   "loss/val/seg_total"],
+
+        # Segmentation scales — Dice
+        "train_p3_dice": ["train/seg/p3_dice", "train/p3_dice", "loss/train/p3_dice"],
+        "val_p3_dice":   ["val/seg/p3_dice",   "val/p3_dice",   "loss/val/p3_dice"],
+        "train_p4_dice": ["train/seg/p4_dice", "train/p4_dice", "loss/train/p4_dice"],
+        "val_p4_dice":   ["val/seg/p4_dice",   "val/p4_dice",   "loss/val/p4_dice"],
+        "train_p5_dice": ["train/seg/p5_dice", "train/p5_dice", "loss/train/p5_dice"],
+        "val_p5_dice":   ["val/seg/p5_dice",   "val/p5_dice",   "loss/val/p5_dice"],
+
+        # Segmentation scales — BCE (accept *bca* synonyms if present)
+        "train_p3_bce": ["train/seg/p3_bce", "train/seg/p3_bca", "train/p3_bce", "train/p3_bca"],
+        "val_p3_bce":   ["val/seg/p3_bce",   "val/seg/p3_bca",   "val/p3_bce",   "val/p3_bca"],
+        "train_p4_bce": ["train/seg/p4_bce", "train/seg/p4_bca", "train/p4_bce", "train/p4_bca"],
+        "val_p4_bce":   ["val/seg/p4_bce",   "val/seg/p4_bca",   "val/p4_bce",   "val/p4_bca"],
+        "train_p5_bce": ["train/seg/p5_bce", "train/seg/p5_bca", "train/p5_bce", "train/p5_bca"],
+        "val_p5_bce":   ["val/seg/p5_bce",   "val/seg/p5_bca",   "val/p5_bce",   "val/p5_bca"],
+
+        # Metrics (unchanged; generally val-only)
         "precision": ["metrics/precision(B)", "metrics/precision", "precision", "Precision"],
         "recall":    ["metrics/recall(B)",    "metrics/recall",    "recall",    "Recall"],
         "map50":     ["metrics/mAP50(B)",     "metrics/mAP50",     "mAP50",     "map50"],
@@ -970,34 +980,68 @@ def plot_results(
         resolved = {}
         for k, cands in ALIASES.items():
             resolved[k] = _get_col_name(hdr, cands)
-            if resolved[k] is None and k not in {"p3_dice", "p4_dice", "p5_dice", "p3_bce", "p4_bce", "p5_bce"}:
-                LOGGER.warning(f"[plot_results] Missing column for '{k}'. Tried: {cands}")
         return resolved
 
-    # Colors and unified-legend collector
+    # ---- Colors and unified-legend collector ----
+    # Metrics colors keep prior scheme
     ACTUAL_COLOR = "#009988"
     SMOOTH_COLOR = "#EE7733"
+
+    # Loss colors as requested
+    TRAIN_RAW   = "#364B9A"
+    TRAIN_SMOOTH= "#6EA6CD"
+    VAL_RAW     = "#DD3D2D"
+    VAL_SMOOTH  = "#FDB366"
+
+    from matplotlib.lines import Line2D
     legend_items: dict[str, Line2D] = {}
 
+    def _add_proxy_once(name: str, **style):
+        if name not in legend_items:
+            legend_items[name] = Line2D([0], [0], **style)
+
+    def _plot_train_val(ax, x, y_train, y_val, title: str, sigma: float = 3.0):
+        """Plot train+val raw (solid) and smoothed (dashed) with fixed colors."""
+        import numpy as np
+        from scipy.ndimage import gaussian_filter1d
+
+        if y_train is not None:
+            yt = np.asarray(y_train, dtype=float)
+            ax.plot(x, yt, marker=".", linewidth=1.1, markersize=3.0, color=TRAIN_RAW)
+            if len(yt) >= 5 and sigma > 0:
+                yts = gaussian_filter1d(yt, sigma=sigma)
+                ax.plot(x, yts, linestyle="--", linewidth=1.1, color=TRAIN_SMOOTH)
+            _add_proxy_once("Training", linestyle="-", color=TRAIN_RAW, marker=".", linewidth=1.1, markersize=3.0)
+            _add_proxy_once("Training (smoothed)", linestyle="--", color=TRAIN_SMOOTH, linewidth=1.1)
+
+        if y_val is not None:
+            yv = np.asarray(y_val, dtype=float)
+            ax.plot(x, yv, marker=".", linewidth=1.1, markersize=3.0, color=VAL_RAW)
+            if len(yv) >= 5 and sigma > 0:
+                yvs = gaussian_filter1d(yv, sigma=sigma)
+                ax.plot(x, yvs, linestyle="--", linewidth=1.1, color=VAL_SMOOTH)
+            _add_proxy_once("Validation", linestyle="-", color=VAL_RAW, marker=".", linewidth=1.1, markersize=3.0)
+            _add_proxy_once("Validation (smoothed)", linestyle="--", color=VAL_SMOOTH, linewidth=1.1)
+
+        ax.set_title(title, pad=2.0)
+        ax.grid(True, which="major", alpha=0.25)
+        ax.tick_params(axis="both", which="both", length=2)
+
     def _plot_one(ax, x, y, label: str, title: str, sigma: float = 3.0):
-        """Plot raw (solid) and smoothed (dashed) with fixed colors and collect legend entries once per label."""
+        """Original single-series plotter, now skipping legend if label == ''."""
+        import numpy as np
+        from scipy.ndimage import gaussian_filter1d
         y = np.asarray(y, dtype=float)
-        # actual
         ln_actual, = ax.plot(x, y, marker=".", linewidth=1.2, markersize=3.2,
-                             color=ACTUAL_COLOR, label=label)
-        # smoothed
+                             color=ACTUAL_COLOR)
         if len(y) >= 5 and sigma > 0:
             ys = gaussian_filter1d(y, sigma=sigma)
             ln_smooth, = ax.plot(x, ys, linestyle="--", linewidth=1.2,
-                                 color=SMOOTH_COLOR, label=f"{label} (smooth)")
-            # add proxy for smooth if first time
-            if f"{label} (smooth)" not in legend_items:
-                legend_items[f"{label} (smooth)"] = Line2D([0], [0], linestyle="--", color=SMOOTH_COLOR, linewidth=1.2)
-        # add proxy for actual if first time
-        if label not in legend_items:
-            legend_items[label] = Line2D([0], [0], linestyle="-", color=ACTUAL_COLOR, marker=".", linewidth=1.2,
-                                         markersize=3.2)
-
+                                 color=SMOOTH_COLOR)
+            if label:
+                _add_proxy_once(f"{label} (smooth)", linestyle="--", color=SMOOTH_COLOR, linewidth=1.2)
+        if label:
+            _add_proxy_once(label, linestyle="-", color=ACTUAL_COLOR, marker=".", linewidth=1.2, markersize=3.2)
         ax.set_title(title, pad=2.0)
         ax.grid(True, which="major", alpha=0.25)
         ax.tick_params(axis="both", which="both", length=2)
@@ -1013,10 +1057,10 @@ def plot_results(
     #  4  Spacer
     #  5  Metrics row (4 panels)
     fig = plt.figure(figsize=(7.6, 8.2), constrained_layout=False)
-    height_ratios = [1.20, 0.35, 1.25, 1.25, 0.40, 1.15]
+    height_ratios = [1.25, 0.1, 1.25, 1.25, 0.1, 1.25]
     outer = gridspec.GridSpec(
         nrows=len(height_ratios), ncols=4, figure=fig,
-        height_ratios=height_ratios, wspace=0.55, hspace=0.80
+        height_ratios=height_ratios, wspace=0.55, hspace=0.45
     )
 
     # Detection row (row 0)
@@ -1065,10 +1109,10 @@ def plot_results(
 
     # spacer rows are 1 (between Detection and Segmentation) and 4 (between Segmentation and Metrics)
     y_between_det_seg = _sep_y(1, separator_offset)
-    y_between_seg_met = _sep_y(4, separator_offset)
+    y_between_seg_met = _sep_y(4, separator_offset) + 0.045
 
     for y in (y_between_det_seg, y_between_seg_met):
-        fig.lines.append(plt.Line2D([0.06, 0.98], [y, y], transform=fig.transFigure, linewidth=0.9, alpha=0.7))
+        fig.lines.append(plt.Line2D([0.06, 0.98], [y, y], transform=fig.transFigure, linewidth=2, alpha=0.7, color="#444444"))
 
     # --------------------------------------------------
     # Read and plot (overlay multiple results*.csv)
@@ -1081,49 +1125,61 @@ def plot_results(
             x_name = keys["x"] or df.columns[0]
             x = df[x_name].values
 
-            # Detection row
-            for ax, key, ttl in [
-                (ax_det_total, "det_total", "Detection total"),
-                (ax_det_box,   "det_box",   "Box loss"),
-                (ax_det_dfl,   "det_dfl",   "DFL loss"),
-                (ax_det_cls,   "det_cls",   "Cls loss"),
+            # ---------- Detection row (train+val) ----------
+            for ax, kt, kv, ttl in [
+                (ax_det_total, "train_det_total", "val_det_total", "Detection total"),
+                (ax_det_box,   "train_det_box",   "val_det_box",   "Box loss"),
+                (ax_det_dfl,   "train_det_dfl",   "val_det_dfl",   "DFL loss"),
+                (ax_det_cls,   "train_det_cls",   "val_det_cls",   "Cls loss"),
             ]:
-                cname = keys.get(key)
-                if cname is None:
+                ct, cv = keys.get(kt), keys.get(kv)
+                if ct is None and cv is None:
                     ax.set_title(ttl + " (missing)"); ax.grid(True, alpha=0.15)
                 else:
-                    _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma); any_curve = True
+                    _plot_train_val(
+                        ax, x,
+                        df[ct] if ct else None,
+                        df[cv] if cv else None,
+                        title=ttl, sigma=smooth_sigma
+                    ); any_curve = True
 
-            # Segmentation rows
-            cname = keys.get("seg_total")
-            if cname is None:
+            # ---------- Segmentation totals (train+val) ----------
+            ct, cv = keys.get("train_seg_total"), keys.get("val_seg_total")
+            if ct is None and cv is None:
                 ax_seg_total.set_title("Seg total (missing)"); ax_seg_total.grid(True, alpha=0.15)
             else:
-                _plot_one(ax_seg_total, x, df[cname], label=f.stem, title="Seg total", sigma=smooth_sigma); any_curve = True
+                _plot_train_val(
+                    ax_seg_total, x,
+                    df[ct] if ct else None,
+                    df[cv] if cv else None,
+                    title="Seg total", sigma=smooth_sigma
+                ); any_curve = True
 
-            for ax, key, ttl in [
-                (ax_p3_dice, "p3_dice", "P3 Dice"),
-                (ax_p4_dice, "p4_dice", "P4 Dice"),
-                (ax_p5_dice, "p5_dice", "P5 Dice"),
+            # ---------- Segmentation scales (Dice) ----------
+            for ax, kt, kv, ttl in [
+                (ax_p3_dice, "train_p3_dice", "val_p3_dice", "P3 Dice"),
+                (ax_p4_dice, "train_p4_dice", "val_p4_dice", "P4 Dice"),
+                (ax_p5_dice, "train_p5_dice", "val_p5_dice", "P5 Dice"),
             ]:
-                cname = keys.get(key)
-                if cname is None:
+                ct, cv = keys.get(kt), keys.get(kv)
+                if ct is None and cv is None:
                     ax.set_title(ttl + " (missing)"); ax.grid(True, alpha=0.15)
                 else:
-                    _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma); any_curve = True
+                    _plot_train_val(ax, x, df[ct] if ct else None, df[cv] if cv else None, ttl, smooth_sigma); any_curve = True
 
-            for ax, key, ttl in [
-                (ax_p3_bce, "p3_bce", "P3 BCE"),
-                (ax_p4_bce, "p4_bce", "P4 BCE"),
-                (ax_p5_bce, "p5_bce", "P5 BCE"),
+            # ---------- Segmentation scales (BCE) ----------
+            for ax, kt, kv, ttl in [
+                (ax_p3_bce, "train_p3_bce", "val_p3_bce", "P3 BCE"),
+                (ax_p4_bce, "train_p4_bce", "val_p4_bce", "P4 BCE"),
+                (ax_p5_bce, "train_p5_bce", "val_p5_bce", "P5 BCE"),
             ]:
-                cname = keys.get(key)
-                if cname is None:
+                ct, cv = keys.get(kt), keys.get(kv)
+                if ct is None and cv is None:
                     ax.set_title(ttl + " (missing)"); ax.grid(True, alpha=0.15)
                 else:
-                    _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma); any_curve = True
+                    _plot_train_val(ax, x, df[ct] if ct else None, df[cv] if cv else None, ttl, smooth_sigma); any_curve = True
 
-            # Metrics row
+            # ---------- Metrics row (keep single-series style; no legend entries) ----------
             for ax, key, ttl in [
                 (ax_prec,   "precision", "Precision"),
                 (ax_rec,    "recall",    "Recall"),
@@ -1134,7 +1190,7 @@ def plot_results(
                 if cname is None:
                     ax.set_title(ttl + " (missing)"); ax.grid(True, alpha=0.15)
                 else:
-                    _plot_one(ax, x, df[cname], label=f.stem, title=ttl, sigma=smooth_sigma); any_curve = True
+                    _plot_one(ax, x, df[cname], label="", title=ttl, sigma=smooth_sigma); any_curve = True
 
         except Exception as e:
             LOGGER.error(f"[plot_results] Plotting error for {f}: {e}")
@@ -1142,22 +1198,20 @@ def plot_results(
     # --------------------------------------------
     # Cosmetics: labels and unified legend
     # --------------------------------------------
-    # X labels only where useful (bottom row of each block)
     for ax in [ax_det_total, ax_det_box, ax_det_dfl, ax_det_cls,
                ax_p3_bce, ax_p4_bce, ax_p5_bce,
                ax_prec, ax_rec, ax_map50, ax_map5095]:
         ax.set_xlabel("Epoch")
 
-    # Global legend (bottom, outside all plots)
     if legend_items:
         handles = list(legend_items.values())
         labels = list(legend_items.keys())
         ncols = max(2, min(len(labels), 6))
-        fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, -0.015),
+        fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.03),
                    ncol=ncols, frameon=False, handlelength=2.5, columnspacing=1.6)
 
-    # Tighten and save (extra bottom space for legend)
-    fig.subplots_adjust(left=0.08, right=0.99, top=0.98, bottom=0.12, wspace=0.55, hspace=0.82)
+    # Tighten and save
+    fig.subplots_adjust(left=0.08, right=0.99, top=0.98, bottom=0.12, wspace=0.55, hspace=0.45)               
     fname = save_dir / "results.png"
     try:
         fig.savefig(fname, dpi=300, bbox_inches="tight", pad_inches=0.02)

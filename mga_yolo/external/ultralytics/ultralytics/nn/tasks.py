@@ -73,6 +73,10 @@ try:  # MGA custom module
     from mga_yolo.nn.modules.segmentation import MGAMaskHead  # noqa: F401
 except Exception:
     MGAMaskHead = None  # type: ignore
+try:  # Masked ECA attention
+    from mga_yolo.nn.modules.masked_eca import MaskECA  # noqa: F401
+except Exception:
+    MaskECA = None  # type: ignore
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.utils.loss import (
@@ -161,18 +165,7 @@ class BaseModel(torch.nn.Module):
         return self._predict_once(x, profile, visualize, embed)
 
     def _predict_once(self, x, profile=False, visualize=False, embed=None):
-        """
-        Perform a forward pass through the network.
-
-        Args:
-            x (torch.Tensor): The input tensor to the model.
-            profile (bool): Print the computation time of each layer if True.
-            visualize (bool): Save the feature maps of the model if True.
-            embed (list, optional): A list of feature vectors/embeddings to return.
-
-        Returns:
-            (torch.Tensor): The last output of the model.
-        """
+        """Perform a single forward pass through the network."""
         y, dt, embeddings = [], [], []  # outputs
         embed = frozenset(embed) if embed is not None else {-1}
         max_idx = max(embed)
@@ -1716,6 +1709,21 @@ def parse_model(d, ch, verbose=True):
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
+        elif m is MGAMaskHead:  # custom MGA mask head with shape control
+            # Infer input channels from source, and width-scale hidden channels like other modules.
+            c_in = ch[f]
+            hidden = args[1] if len(args) > 1 else max(8, c_in // 4)
+            out_ch = args[2] if len(args) > 2 else 1
+            hidden = make_divisible(min(hidden, max_channels) * width, 8)
+            args = [c_in, hidden, out_ch, *args[3:]]
+            c2 = out_ch
+        elif m is MaskECA:  # custom attention: takes [feat, mask] and preserves channels
+            c_in = ch[f[0]] if isinstance(f, (list, tuple)) else ch[f]
+            if len(args) == 0:
+                args = [c_in]
+            else:
+                args[0] = c_in  # ensure channels match scaled features
+            c2 = c_in
         elif m in frozenset(
             {Detect, WorldDetect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB, ImagePoolingAttn, v10Detect}
         ):

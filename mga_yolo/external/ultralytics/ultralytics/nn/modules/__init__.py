@@ -188,3 +188,10 @@ try:  # pragma: no cover
 except Exception as e:  # pragma: no cover
     # Silently ignore if custom module not present; building MGA YAML will fail visibly then.
     pass
+
+# Attempt to import MaskECA attention
+try:  # pragma: no cover
+    from mga_yolo.nn.modules.masked_eca import MaskECA  # type: ignore
+    __all__ = (*__all__, "MaskECA")
+except Exception:
+    pass

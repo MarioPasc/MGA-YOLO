@@ -55,16 +55,16 @@ head:
   - [-1, 2, C3k2, [256, False]]      # 16 (P3)
 
   - [-1, 1, Conv, [256, 3, 2]]
-  - [[-1, 13], 1, Concat, [1]]       # cat head P4
+  - [[-1, 12], 1, Concat, [1]]       # cat head P4 (fix: concat with C3k2 P4 feature)
   - [-1, 2, C3k2, [512, False]]      # 19 (P4)
 
   - [-1, 1, Conv, [512, 3, 2]]
-  - [[-1, 10], 1, Concat, [1]]       # cat head P5
+  - [[-1, 9], 1, Concat, [1]]        # cat head P5 (fix: concat with SPPF output)
   - [-1, 2, C3k2, [1024, True]]      # 22 (P5)
 
   # ----------------------------------------------------------------------
   # MGA ADDITIONS (placeholders)
-  # For each scale (P3=16, P4=19, P5=22) we:
+  # For each scale (P3=15, P4=18, P5=21) we:
   #   1. Predict a scale-specific segmentation mask (or mask features) via MGAMaskHead
   #   2. Apply a mask-guided attention refinement MGAAttention that takes
   #      (feature, mask) -> refined feature used for detection
@@ -72,15 +72,15 @@ head:
   #   23: P3 mask, 24: P3 refined feature
   #   25: P4 mask, 26: P4 refined feature
   #   27: P5 mask, 28: P5 refined feature
-  - [16, 1, MGAMaskHead, [256, 64]]          # 23 mask head for P3 (out channels placeholder 64)
-  - [[16, 23], 1, MGAAttention, [256]]       # 24 refined P3 feature
-  - [19, 1, MGAMaskHead, [512, 128]]         # 25 mask head for P4
-  - [[19, 25], 1, MGAAttention, [512]]       # 26 refined P4 feature
-  - [22, 1, MGAMaskHead, [1024, 256]]        # 27 mask head for P5
-  - [[22, 27], 1, MGAAttention, [1024]]      # 28 refined P5 feature
+  - [15, 1, MGAMaskHead, [256, 64]]          # 23 mask head for P3 (from C3k2 P3)
+  - [[15, 22], 1, MaskECA, [256]]       # 24 refined P3 feature (feature=15, mask=22)
+  - [18, 1, MGAMaskHead, [512, 128]]         # 25 mask head for P4 (from C3k2 P4)
+  - [[18, 24], 1, MaskECA, [512]]       # 26 refined P4 feature (feature=18, mask=24)
+  - [21, 1, MGAMaskHead, [1024, 256]]        # 27 mask head for P5 (corrected from 22->21)
+  - [[21, 26], 1, MaskECA, [1024]]      # 28 refined P5 feature (feature=21, mask=26)
 
   # (Optional future) multi-scale mask fusion head could go here.
   # - [[23,25,27], 1, MGAMaskFusion, [nc]]   # produce final fused mask logits (not yet implemented)
 
-  # Final detection head now consumes refined features (24,26,28)
-  - [[24, 26, 28], 1, Detect, [nc]]          # 29 Detect(P3, P4, P5)
+  # Final detection head now consumes refined features (23,25,27)
+  - [[23, 25, 27], 1, Detect, [nc]]          # Detect(P3, P4, P5) (use refined outputs)
