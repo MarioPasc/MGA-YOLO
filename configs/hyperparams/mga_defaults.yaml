@@ -15,7 +15,7 @@
 task: mga 
 mode: train 
 model: configs/models/yolov8_test_segment_heads.yaml
-data: configs/data/data.yaml 
+data: configs/data/mga_data.yaml 
 
 # Mask-Related Hyperparameters
 MGA_MASK_METHOD: area
@@ -50,15 +50,15 @@ seg_loss_lambda: 1.0 # Loss lambda for segmentation loss when combined with dete
 seg_smooth: 1.0 # Smoothing factor for segmentation
 
 ## Enabled augmentation hyperparameters ##
-degrees: 180 # (float) image rotation (+/- deg)
-translate: 0.5 # (float) image translation (+/- fraction)
-scale: 0.5 # (float) image scale (+/- gain)
-shear: 90 # (float) image shear (+/- deg)
-perspective: 0.005 # (float) image perspective (+/- fraction), range 0-0.001
-flipud: 0.1 # (float) image flip up-down (probability)
-fliplr: 0.6 # (float) image flip left-right (probability)
+translate: 0.2 # (float) image translation (+/- fraction)
+scale: 0.2 # (float) image scale (+/- gain)
+fliplr: 0.2 # (float) image flip left-right (probability)
 
 ## Disabled augmentation hyperparameters ##
+degrees: 0 # (float) image rotation (+/- deg)
+shear: 0.0 # (float) image shear (+/- deg)
+perspective: 0.0 # (float) image perspective (+/- fraction), range 0-0.001
+flipud: 0.0 # (float) image flip up-down (probability)
 hsv_h: 0.0 # (float) image HSV-Hue augmentation (fraction)
 hsv_s: 0.0 # (float) image HSV-Saturation augmentation (fraction)
 hsv_v: 0.0 # (float) image HSV-Value augmentation (fraction)
