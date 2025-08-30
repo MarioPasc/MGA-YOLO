@@ -141,14 +141,18 @@ class MGATrainer(DetectionTrainer):
             loss = self.criterion(preds, batch)
         self.scaler.scale(loss).backward()
         return loss
-
+    
+    # trainer.py
     def get_validator(self):
-        """Return MGAValidator for validation so we can also save masks/boxes."""
-        from .validator import MGAValidator
-        # Ensure base loss names exist for val logging
-        if not hasattr(self, "loss_names") or not self.loss_names:
-            self.loss_names = ("box_loss", "cls_loss", "dfl_loss")
-        return MGAValidator(self.test_loader, save_dir=self.save_dir, args=self.args, _callbacks=self.callbacks)
+        from mga_yolo.model.validator import MGAValidator
+        v = MGAValidator(self.test_loader, save_dir=self.save_dir, args=self.args, _callbacks=self.callbacks)
+        try:
+            v.data = self.data
+        except Exception:
+            pass
+        LOGGER.info("[MGATrainer] Using MGAValidator")
+        return v
+
 
     def resume_training(self, ckpt):
         super().resume_training(ckpt)

@@ -3,14 +3,6 @@
 # per-scale mask (segmentation) heads and Mask-Guided Attention (MGA) refinement
 # modules at the P3, P4 and P5 feature map levels before the final Detect head.
 #
-# NOTE:
-# - Custom modules referenced here (MGAMaskHead, MGAAttention) are NOT yet
-#   implemented. They are placeholders so the architecture definition is laid out.
-# - When you implement these modules, ensure they accept the shapes indicated
-#   and return tensors compatible with the downstream Detect head.
-# - The Detect head here still performs only object detection. A future custom
-#   joint detection+segmentation head (e.g. MGADetect or MGASegment) could replace
-#   it once mask fusion / decoding is implemented.
 #
 # Conventions:
 #   [from, repeats, module, args]

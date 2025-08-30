@@ -16,9 +16,8 @@
 
 task: mga 
 mode: train 
-model: configs/models/yolov8_seg_heads.yaml
+model: configs/models/yolov8_maskeca.yaml
 data: configs/data/mga_data.yaml 
-
 # Mask-Related Hyperparameters
 MGA_MASK_METHOD: area
 MGA_MASK_BRIDGE: 0
@@ -87,7 +86,7 @@ cache: False # (bool) True/ram, disk or False. Use cache for data loading
 device: 0 # (int | str | list) device: CUDA device=0 or [0,1,2,3] or "cpu/mps" or -1 or [-1,-1] to auto-select idle GPUs
 workers: 0 # (int) number of worker threads for data loading (per RANK if DDP)
 project: "/home/mpascual/research/results/mga/MGA_YOLO" # (str, optional) project name
-name: "yolov8_seg_heads" # (str, optional) experiment name, results saved to 'project/name' directory
+name: "yolov8_seg_mga" # (str, optional) experiment name, results saved to 'project/name' directory
 exist_ok: False # (bool) whether to overwrite existing experiment
 pretrained: True # (bool | str) whether to use a pretrained model (bool) or a model to load weights from (str)
 verbose: True # (bool) whether to print verbose output
