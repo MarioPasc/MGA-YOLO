@@ -6,6 +6,10 @@ from typing import Any, Dict, List, Optional
 import contextlib
 import os
 import torch
+import cv2
+import numpy as np
+import pandas as pd # type: ignore
+import yaml
 
 from mga_yolo.external.ultralytics.ultralytics.models.yolo.detect.val import DetectionValidator
 from mga_yolo.external.ultralytics.ultralytics.utils import LOGGER
@@ -52,6 +56,7 @@ class MGAValidator(DetectionValidator):
         self._registered_ids: Dict[int, int] = {}  # layer -> id(module)
         self._force_once_done: bool = False
 
+        self._logged_once: bool = False
         LOGGER.info(f"[MGAValidator] init fm_enabled={self._fm_enabled} layers={self._fm_layers}")
 
     # -------------------------- helpers --------------------------
@@ -104,6 +109,7 @@ class MGAValidator(DetectionValidator):
     def __call__(self, trainer: Optional[Any] = None, model: Optional[Any] = None) -> Dict[str, Any]:
         LOGGER.info("[MGAValidator] __call__ entered")
 
+        self._logged_once = False
         if model is None and trainer is not None:
             model = getattr(trainer, "model", None)
         if model is None:
@@ -152,7 +158,7 @@ class MGAValidator(DetectionValidator):
                         return (tuple(v.shape), str(v.dtype), str(v.device))
                     return type(v).__name__
 
-                LOGGER.info(f"[MGAValidator] masks_multi after preprocess: {_summ(batch['masks_multi'])}")
+                LOGGER.debug(f"[MGAValidator] masks_multi after preprocess: {_summ(batch['masks_multi'])}")
         return batch
 
     # -------------------------- hooks --------------------------
@@ -234,86 +240,101 @@ class MGAValidator(DetectionValidator):
 
     def update_metrics(self, preds: Any, batch: Dict[str, Any]) -> None:
         super().update_metrics(preds, batch)
-        if not self._fm_enabled or not self._is_main():
-            return
-
-        # Diagnostics
-        now_ids: Dict[int, int] = {}
-        try:
-            seq = getattr(self.model, "model", None)
-            if seq is not None:
-                for li in self._fm_layers:
-                    if li < len(seq):
-                        now_ids[getattr(seq[li], "i", li)] = id(seq[li])
-        except Exception:
-            pass
-        LOGGER.info(
-            f"[MGAValidator] diag saw_forward={self._saw_forward} "
-            f"fm_keys={sorted(self._fm_last.keys())} ids_reg={self._registered_ids} ids_now={now_ids}"
-        )
-
-        # Emergency: force one forward once to populate hooks if empty
-        if not self._fm_last and not self._force_once_done:
-            imgs = batch.get("img", None)
-            if imgs is not None:
-                try:
-                    try:
-                        p = next(self.model.parameters())
-                        LOGGER.info(
-                            f"[MGAValidator] force fwd: imgs.dtype={imgs.dtype} dev={imgs.device} "
-                            f"model.dtype={p.dtype} dev={p.device} amp_half={getattr(self.args,'half', False)}"
-                        )
-                    except Exception:
-                        pass
-                    self.model.eval()
-                    use_amp = bool(getattr(self.args, "half", False)) and (self.device.type == "cuda")
-                    amp_ctx = torch.cuda.amp.autocast(enabled=use_amp) if use_amp else contextlib.nullcontext()
-                    with torch.no_grad(), amp_ctx:
-                        _ = self.model(imgs.to(self.device, non_blocking=True))
-                    self._force_once_done = True
-                    LOGGER.info("[MGAValidator] forced one forward to capture FMs.")
-                except Exception as e:
-                    LOGGER.warning(f"[MGAValidator] forced forward failed: {e}")
 
         # ---- save captured tensors to a single folder: val_batch0_fm ----
         save_dir = Path(getattr(self, "save_dir", Path("runs/val/exp")))
-        out_dir = save_dir / "val_batch0_fm"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Only save FM maps for the last epoch
+        # Which epoch are we in?
+        results_csv = pd.read_csv(save_dir / "results.csv") if (save_dir / "results.csv").exists() else None
+        current_epoch = int(results_csv["epoch"].max()) if results_csv is not None else 0
+        # What is the max epoch?
+        args_yaml = yaml.safe_load(open(save_dir / "args.yaml")) if (save_dir / "args.yaml").exists() else {}
+        total_epochs = int(args_yaml.get("epochs", 0))
+        
+        if not self._logged_once:
+            LOGGER.info(f"\n[MGAValidator] epoch {current_epoch+1}/{total_epochs}. Only saving FM maps in epoch {total_epochs}.")
+            self._logged_once = True
+            
+        if int(total_epochs) == int(current_epoch+1):
+            if not self._fm_enabled or not self._is_main():
+                return
 
-        B = int(batch.get("img", torch.empty(0)).shape[0]) if "img" in batch else 0
-        im_files = batch.get("im_file", [str(i) for i in range(B)])
+            # Diagnostics
+            now_ids: Dict[int, int] = {}
+            try:
+                seq = getattr(self.model, "model", None)
+                if seq is not None:
+                    for li in self._fm_layers:
+                        if li < len(seq):
+                            now_ids[getattr(seq[li], "i", li)] = id(seq[li])
+            except Exception:
+                pass
+            LOGGER.debug(
+                f"[MGAValidator] diag saw_forward={self._saw_forward} "
+                f"fm_keys={sorted(self._fm_last.keys())} ids_reg={self._registered_ids} ids_now={now_ids}"
+            )
 
-        n_saved = 0
-        LOGGER.info(f"[MGAValidator] captured keys this batch: {sorted(self._fm_last.keys())}")
-        for li, t in sorted(self._fm_last.items()):
-            if not torch.is_tensor(t) or t.ndim < 3:
-                continue
-            bsz = t.shape[0]
-            for bi in range(min(B, bsz)):
-                stem = Path(im_files[bi]).stem if isinstance(im_files, (list, tuple)) and len(im_files) > bi else str(bi)
-                out_path = out_dir / f"{stem}_{li}.pt"
-                torch.save(
-                    {"layer_index": int(li), "shape": tuple(t[bi].shape), "tensor": t[bi].cpu()},
-                    out_path,
-                )
-                n_saved += 1
-        LOGGER.info(f"[MGAValidator] saved {n_saved} tensors to {out_dir}")
+            # Emergency: force one forward once to populate hooks if empty
+            if not self._fm_last and not self._force_once_done:
+                imgs = batch.get("img", None)
+                if imgs is not None:
+                    try:
+                        try:
+                            p = next(self.model.parameters())
+                            LOGGER.info(
+                                f"[MGAValidator] force fwd: imgs.dtype={imgs.dtype} dev={imgs.device} "
+                                f"model.dtype={p.dtype} dev={p.device} amp_half={getattr(self.args,'half', False)}"
+                            )
+                        except Exception:
+                            pass
+                        self.model.eval()
+                        use_amp = bool(getattr(self.args, "half", False)) and (self.device.type == "cuda")
+                        amp_ctx = torch.cuda.amp.autocast(enabled=use_amp) if use_amp else contextlib.nullcontext()
+                        with torch.no_grad(), amp_ctx:
+                            _ = self.model(imgs.to(self.device, non_blocking=True))
+                        self._force_once_done = True
+                        LOGGER.info("[MGAValidator] forced one forward to capture FMs.")
+                    except Exception as e:
+                        LOGGER.warning(f"[MGAValidator] forced forward failed: {e}")
+                
+                LOGGER.info(f"[MGAValidator] Saving feature maps for batch 0 to disk.")
+                out_dir = save_dir / "val_batch0_fm"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                
+                B = int(batch.get("img", torch.empty(0)).shape[0]) if "img" in batch else 0
+                im_files = batch.get("im_file", [str(i) for i in range(B)])
 
-        # Diagnostics: check MaskECA vs Detect inputs
-        pairs = [(23, 280), (25, 281), (27, 282)]
-        for la, lb in pairs:
-            ta = self._fm_last.get(la, None)
-            tb = self._fm_last.get(lb, None)
-            if isinstance(ta, torch.Tensor) and isinstance(tb, torch.Tensor):
-                # compare per image 0 to keep it light
-                try:
-                    msg = self._cmp_t(ta[0], tb[0])
-                except Exception as _:
-                    msg = "compare_failed"
-                LOGGER.info(f"[MGAValidator] compare {la} vs {lb}: {msg}")
-            else:
-                LOGGER.info(f"[MGAValidator] compare {la} vs {lb}: missing (keys={sorted(self._fm_last.keys())})")
+                n_saved = 0
+                LOGGER.info(f"[MGAValidator] captured keys this batch: {sorted(self._fm_last.keys())}")
+                for li, t in sorted(self._fm_last.items()):
+                    if not torch.is_tensor(t) or t.ndim < 3:
+                        continue
+                    bsz = t.shape[0]
+                    for bi in range(min(B, bsz)):
+                        stem = Path(im_files[bi]).stem if isinstance(im_files, (list, tuple)) and len(im_files) > bi else str(bi)
+                        out_path = out_dir / f"{stem}_{li}.pt"
+                        torch.save(
+                            {"layer_index": int(li), "shape": tuple(t[bi].shape), "tensor": t[bi].cpu()},
+                            out_path,
+                        )
+                        n_saved += 1
+                LOGGER.info(f"[MGAValidator] saved {len(os.listdir(out_dir))} tensors to {out_dir}")
 
+                # Diagnostics: check MaskECA vs Detect inputs
+                pairs = [(self._fm_layers[0], 280), (self._fm_layers[1], 281), (self._fm_layers[2], 282)]
+                for la, lb in pairs:
+                    ta = self._fm_last.get(la, None)
+                    tb = self._fm_last.get(lb, None)
+                    if isinstance(ta, torch.Tensor) and isinstance(tb, torch.Tensor):
+                        # compare per image 0 to keep it light
+                        try:
+                            msg = self._cmp_t(ta[0], tb[0])
+                        except Exception as _:
+                            msg = "compare_failed"
+                        LOGGER.info(f"[MGAValidator] compare {la} vs {lb}: {msg}")
+                    else:
+                        LOGGER.info(f"[MGAValidator] compare {la} vs {lb}: missing (keys={sorted(self._fm_last.keys())})")
 
     # -------------------------- postprocess/plots passthrough --------------------------
 

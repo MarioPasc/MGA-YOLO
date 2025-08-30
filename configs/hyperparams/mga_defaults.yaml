@@ -18,11 +18,14 @@ task: mga
 mode: train 
 model: configs/models/yolov8_maskeca.yaml
 data: configs/data/mga_data.yaml 
+epochs: 2 
+
 # Mask-Related Hyperparameters
 MGA_MASK_METHOD: area
 MGA_MASK_BRIDGE: 0
 MGA_MASK_THRESH: 0.0
-
+MGA_SAVE_FM: True
+MGA_SAVE_LAYERS: "15,18,21" # These are the pre-attention feature maps
 
 # Hyperparameters ------------------------------------------------------------------------------------------------------
 
@@ -75,7 +78,6 @@ pose: 0.0 # (float) pose loss gain
 kobj: 0.0 # (float) keypoint obj loss gain
 
 # Train settings -------------------------------------------------------------------------------------------------------
-epochs: 1 # (int) number of epochs to train for
 time: # (float, optional) number of hours to train for, overrides epochs if supplied
 patience: 100 # (int) epochs to wait for no observable improvement for early stopping of training
 batch: 4 # (int) number of images per batch (-1 for AutoBatch)
