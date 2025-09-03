@@ -11,9 +11,9 @@
 #   'args' are passed to the module __init__
 #
 # Parameters
-nc: 80            # number of detection classes
+nc: 1            # number of detection classes
 # (Optional future) nm: 32   # number of prototype / mask channels if a proto head is later added
-scales:           # model compound scaling constants, i.e. model=yolov8_mgan.yaml would select scale 'n'
+scales:           # model compound scaling constants, i.e. model=yolov8m_mga.yaml would select scale 'm'
   # [depth, width, max_channels]
   n: [0.50, 0.25, 1024]
   s: [0.50, 0.50, 1024]

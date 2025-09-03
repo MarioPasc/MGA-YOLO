@@ -1,6 +1,9 @@
 from __future__ import annotations
 from typing import Any, Dict, List
+
+from copy import deepcopy
 import torch
+import torch.nn as nn
 
 from mga_yolo.external.ultralytics.ultralytics.models.yolo.detect.train import DetectionTrainer
 from mga_yolo.external.ultralytics.ultralytics.utils import LOGGER, RANK
@@ -170,69 +173,35 @@ class MGATrainer(DetectionTrainer):
             import pathlib
             import numbers
 
-            def _sanitize(obj: Any) -> Any:
-                # Primitives and None
-                if obj is None or isinstance(obj, (str, bool, int, float)):
-                    return obj
-                # Numeric types (numpy) fallback
-                if isinstance(obj, numbers.Number):
-                    return float(obj)
-                # Paths -> str
-                if isinstance(obj, (pathlib.Path, )):
-                    return str(obj)
-                # Tensors/state dicts are fine as-is (torch handles pickling)
-                if isinstance(obj, torch.Tensor):
-                    return obj
-                # SimpleNamespace / IterableSimpleNamespace -> dict
-                if isinstance(obj, SimpleNamespace):
-                    return {k: _sanitize(v) for k, v in vars(obj).items()}
-                # Dicts
-                if isinstance(obj, dict):
-                    return {str(k): _sanitize(v) for k, v in obj.items()}
-                # Sequences
-                if isinstance(obj, (list, tuple, set)):
-                    t = type(obj)
-                    seq = [_sanitize(v) for v in obj]
-                    return seq if t is list else (tuple(seq) if t is tuple else list(seq))
-                # Fallback to string to avoid pickling custom classes
-                try:
-                    return str(obj)
-                except Exception:
-                    return None
-            # Build a torch.save-compatible checkpoint so downstream tools can load it
-            from copy import deepcopy
-            from mga_yolo.external.ultralytics.ultralytics.utils.torch_utils import convert_optimizer_state_dict_to_fp16
-            import io, torch as _torch
+            def _strip_all_hooks(m: nn.Module) -> None:
+                # Remove all forward/pre/backward hooks so the module is picklable
+                for sub in m.modules():
+                    d = getattr(sub, "_forward_hooks", None)
+                    if isinstance(d, dict): d.clear()
+                    d = getattr(sub, "_forward_pre_hooks", None)
+                    if isinstance(d, dict): d.clear()
+                    d = getattr(sub, "_backward_hooks", None)
+                    if isinstance(d, dict): d.clear()
 
-            # Build a minimal tensor-only checkpoint (no model objects)
-            ema_sd = None
-            if getattr(self, "ema", None) is not None and getattr(self.ema, "ema", None) is not None:
-                try:
-                    ema_sd = deepcopy(self.ema.ema).half().state_dict()
-                except Exception:
-                    ema_sd = None
+            # Build a torch.save-compatible checkpoint so downstream tools can load it
+            model_to_save = deepcopy(self.model).half().cpu()
+            _strip_all_hooks(model_to_save)
+
+            ema_to_save = None
+            if getattr(self, "ema", None) and getattr(self.ema, "ema", None) is not None:
+                ema_to_save = deepcopy(self.ema.ema).half().cpu()
+                _strip_all_hooks(ema_to_save)
 
             ckpt = {
                 "epoch": int(self.epoch),
                 "best_fitness": float(self.best_fitness or 0.0),
-                "model": None,
-                "ema": None,
-                "ema_state_dict": ema_sd,
-                "model_state_dict": (deepcopy(self.model).float().state_dict() if getattr(self, "model", None) else None),
-                "updates": int(getattr(self.ema, "updates", 0)) if getattr(self, "ema", None) else 0,
-                "optimizer": None,
-                "train_args": _sanitize(vars(self.args)),
-                "train_metrics": _sanitize(self.metrics or {}),
+                "model": model_to_save,          # full, picklable
+                "ema": ema_to_save,              # optional
+                "optimizer": (self.optimizer.state_dict() if getattr(self, "optimizer", None) else None),
+                "train_args": vars(self.args),
+                "train_metrics": self.metrics or {},
             }
-
-            buffer = io.BytesIO()
-            _torch.save(ckpt, buffer)
-            data = buffer.getvalue()
-            self.last.write_bytes(data)
-            if self.best_fitness is None or self.best_fitness == ckpt["best_fitness"]:
-                self.best.write_bytes(data)
-            if (self.save_period > 0) and (self.epoch % self.save_period == 0):
-                (self.wdir / f"epoch{self.epoch}.pt").write_bytes(data)
+            torch.save(ckpt, self.last)
         except Exception as e:
             try:
                 LOGGER.warning(f"[MGA] Skipping checkpoint save due to error: {e}")
@@ -255,6 +224,9 @@ class MGATrainer(DetectionTrainer):
         # TRAIN epoch means from tloss/loss_names
         row.update(self._collect_train_epoch_losses())
 
+        # Static parameters snapshot (per-epoch): residual gate alphas from MaskECA blocks
+        row.update(self._collect_alpha_params())
+
         # VAL epoch metrics returned by validator
         if isinstance(metrics, dict):
             row.update(self._collect_val_epoch_losses(metrics))
@@ -275,7 +247,7 @@ class MGATrainer(DetectionTrainer):
             save_dir = Path(getattr(self, "save_dir", "."))
             csv_path = save_dir / "results.csv"
 
-            # Stable header order: epoch, TRAIN..., VAL..., then any extra metrics (sorted for determinism)
+            # Stable header order: epoch, TRAIN..., VAL..., ALPHAS..., then any extra metrics
             train_keys = [
                 "train/det/total", "train/det/box", "train/det/dfl", "train/det/cls",
                 "train/seg/total",
@@ -290,7 +262,8 @@ class MGATrainer(DetectionTrainer):
                 "val/seg/p4_bce", "val/seg/p4_dice",
                 "val/seg/p5_bce", "val/seg/p5_dice",
             ]
-            fixed = ["epoch"] + train_keys + val_keys
+            alpha_keys = ["alpha_P3", "alpha_P4", "alpha_P5"]
+            fixed = ["epoch"] + train_keys + val_keys + alpha_keys
             extras = [k for k in row.keys() if k not in fixed]
             header = fixed + sorted(extras)
 
@@ -456,3 +429,46 @@ class MGATrainer(DetectionTrainer):
             "val/seg/p5_bce": p5_bce,
             "val/seg/p5_dice": p5_dice,
         }
+
+    def _collect_alpha_params(self) -> Dict[str, float]:
+        """Return {'alpha_P3': a3, 'alpha_P4': a4, 'alpha_P5': a5} if present, else zeros.
+
+        It inspects MaskECA modules in EMA model if available, otherwise the current model.
+        """
+        out: Dict[str, float] = {"alpha_P3": 0.0, "alpha_P4": 0.0, "alpha_P5": 0.0}
+        try:
+            model = self.ema.ema if getattr(self, "ema", None) and getattr(self.ema, "ema", None) is not None else self.model
+            if model is None:
+                return out
+            # Late import to avoid circular imports on trainer init
+            from mga_yolo.nn.modules.masked_eca import MaskECA  # type: ignore
+            found = []  # list of tuples (name_or_None, channels_or_None, alpha_value)
+            for m in model.modules():
+                if isinstance(m, MaskECA):
+                    name = getattr(m, "scale_name", None)
+                    ch = getattr(getattr(m, "cfg", None), "channels", None)
+                    try:
+                        a = getattr(m, "alpha")  # property tensor
+                        alpha_val = float(a.detach().cpu()) if hasattr(a, "detach") else float(a)
+                    except Exception:
+                        alpha_val = None
+                    if alpha_val is not None:
+                        found.append((name, ch, alpha_val))
+
+            # First fill by explicit names if any
+            for name, ch, alpha_val in found:
+                if name in ("P3", "P4", "P5"):
+                    out[f"alpha_{name}"] = alpha_val
+
+            # Fallback: if some remain 0.0 and we have 3 values, assign by ascending channels
+            remaining_keys = [k for k, v in out.items() if v == 0.0]
+            if remaining_keys and len(found) >= 1:
+                # sort by ch (None last), then by alpha to ensure deterministic order
+                found_sorted = sorted(found, key=lambda t: (float('inf') if t[1] is None else t[1]))
+                map_keys = ["alpha_P3", "alpha_P4", "alpha_P5"]
+                for (name, ch, alpha_val), key in zip(found_sorted, map_keys):
+                    out[key] = alpha_val
+        except Exception:
+            # keep defaults
+            pass
+        return out

@@ -48,6 +48,7 @@ class MGAValidator(DetectionValidator):
         super().__init__(dataloader, save_dir, args, _callbacks)
         self._fm_enabled: bool = str(os.getenv("MGA_SAVE_FM", "")).lower() in {"1", "true", "yes"}
         layers_str = os.getenv("MGA_SAVE_LAYERS", "23,25,27").strip()
+        self._save_fm_max: int = int(os.getenv("MGA_SAVE_FM_MAX", "4"))
         self._fm_layers: List[int] = [int(t) for t in layers_str.strip("[]").split(",") if t.strip()]
 
         self._fm_hooks: List[Any] = []
@@ -55,6 +56,8 @@ class MGAValidator(DetectionValidator):
         self._saw_forward: bool = False
         self._registered_ids: Dict[int, int] = {}  # layer -> id(module)
         self._force_once_done: bool = False
+
+        self._hook_handles: list[torch.utils.hooks.RemovableHandle] = []
 
         self._logged_once: bool = False
         LOGGER.info(f"[MGAValidator] init fm_enabled={self._fm_enabled} layers={self._fm_layers}")
@@ -107,7 +110,7 @@ class MGAValidator(DetectionValidator):
     # -------------------------- lifecycle --------------------------
 
     def __call__(self, trainer: Optional[Any] = None, model: Optional[Any] = None) -> Dict[str, Any]:
-        LOGGER.info("[MGAValidator] __call__ entered")
+        LOGGER.debug("[MGAValidator] __call__ entered")
 
         self._logged_once = False
         if model is None and trainer is not None:
@@ -118,7 +121,7 @@ class MGAValidator(DetectionValidator):
         self.model = self._unwrap(model)
         if trainer is not None:
             trainer.model = self.model  # ensure same instance
-        LOGGER.info(f"[MGAValidator] using model id={id(self.model)} class={type(self.model).__name__}")
+        LOGGER.debug(f"[MGAValidator] using model id={id(self.model)} class={type(self.model).__name__}")
 
         if self._fm_enabled and not self._fm_hooks:
             self._ensure_fm_hooks()
@@ -134,7 +137,12 @@ class MGAValidator(DetectionValidator):
             if orig_format is not None:
                 self.args.format = orig_format
 
-        LOGGER.info("[MGAValidator] __call__ finished")
+        LOGGER.debug("[MGAValidator] __call__ finished")
+        # at the end of __call__:
+        for h in self._hook_handles:
+            try: h.remove()
+            except Exception: pass
+        self._hook_handles.clear()        
         return out
 
     def preprocess(self, batch: Dict[str, Any]) -> Dict[str, Any]:
@@ -386,12 +394,12 @@ class MGAValidator(DetectionValidator):
      # -------------------------- helpers --------------------------
     def _timepoints(self, total_epochs: int) -> np.ndarray:
         """
-        Compute 4 evaluation timepoints at 25%, 50%, 75%, and 100% of training.
+        Compute self._save_fm_max evaluation timepoints. Default: At 25%, 50%, 75%, and 100% of training.
         Returns a 1D np.ndarray of epoch indices (1-based).
         """
         if total_epochs <= 0:
             return np.array([], dtype=int)
-        q = max(total_epochs // 4, 1)
+        q = max(total_epochs // self._save_fm_max, 1)
         return np.arange(q, total_epochs + q, step=q, dtype=int)
     # -------------------------- metrics + saving --------------------------
 
@@ -409,11 +417,9 @@ class MGAValidator(DetectionValidator):
         args_yaml = yaml.safe_load(open(save_dir / "args.yaml")) if (save_dir / "args.yaml").exists() else {}
         total_epochs = int(args_yaml.get("epochs", 0))
         
-        # We are going to save the feature maps in 4 timepoints during training, to examine the evolution. 
-        # One time at 25% trained, 50% trained, 75% trained, and 100% trained
+        # We are going to save the feature maps in self._save_fm_max timepoints during training, to examine the evolution. 
+        # Default: One time at 25% trained, 50% trained, 75% trained, and 100% trained
         _timepoints = self._timepoints(total_epochs)
-        
-
             
         if int(current_epoch+1) in _timepoints:
             _percentage = (current_epoch + 1) / total_epochs * 100
@@ -434,7 +440,19 @@ class MGAValidator(DetectionValidator):
             LOGGER.debug(f"[MGAValidator] captured FM keys: {sorted(self._fm_last.keys())}")
             n_fm = self._save_feature_maps(fm_dir, batch)
             n_ov, n_ms = self._save_preds_and_masks(preds_dir, batch, preds if isinstance(preds, list) else [])
-            LOGGER.info(f"[MGAValidator] wrote FM={n_fm} tensors, overlays={n_ov}, masks={n_ms} to {base_dir}")
+            
+            # Optional diagnostics
+            pairs = [(self._fm_layers[0], 280), (self._fm_layers[1], 281), (self._fm_layers[2], 282)]
+            for la, lb in pairs:
+                ta = self._fm_last.get(la, None); tb = self._fm_last.get(lb, None)
+                if isinstance(ta, torch.Tensor) and isinstance(tb, torch.Tensor):
+                    try: msg = self._cmp_t(ta[0], tb[0])
+                    except Exception: msg = "compare_failed"
+                    LOGGER.debug(f"[MGAValidator] compare {la} vs {lb}: {msg}")
+                else:
+                    LOGGER.debug(f"[MGAValidator] compare {la} vs {lb}: missing (keys={sorted(self._fm_last.keys())})")
+            
+            LOGGER.debug(f"[MGAValidator] wrote FM={n_fm} tensors, overlays={n_ov}, masks={n_ms} to {base_dir}")
 
 
     # -------------------------- postprocess/plots passthrough --------------------------    

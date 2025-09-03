@@ -34,7 +34,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__all__ = ["MaskECA"]
+__all__ = ["MaskECA", "MaskECAConfig"]
 
 
 def _odd(k: int) -> int:
@@ -110,6 +110,16 @@ class MaskECA(nn.Module):
 		)
 		k = eca_kernel_size(channels, gamma=gamma, b=b, k_min=k_min, k_max=k_max)
 		self.conv1d = nn.Conv1d(1, 1, kernel_size=k, padding=k // 2, bias=False)
+		# Residual gate strength parameterization: alpha = softplus(beta) > 0
+		# Initialize beta=0 → alpha≈0.693; stable positive and learnable
+		self.beta: nn.Parameter = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
+		# Best-effort scale tagging for logging (derived from channels if known)
+		self.scale_name: str = {256: "P3", 512: "P4", 1024: "P5"}.get(channels, f"C{channels}")
+
+	@property
+	def alpha(self) -> torch.Tensor:
+		"""Positive gate strength computed from beta via softplus."""
+		return F.softplus(self.beta)
 
 	def _maybe_rebuild_conv(self, channels: int) -> None:
 		"""Rebuild the 1D conv if runtime channels differ from configured channels.
@@ -171,13 +181,20 @@ class MaskECA(nn.Module):
 		# align dtype with conv parameters to be robust under half precision
 		y = y.to(self.conv1d.weight.dtype)
 		y = self.conv1d(y)  # (B, 1, C)
-		# 3) sigmoid to get channel weights and re-scale features
+		# 3) sigmoid to get channel weights, then residual gating with learnable alpha
 		w = y.squeeze(1).sigmoid().view(b, c, 1, 1)
-		return feat * w
+		# residual gate: g = 1 + alpha * (w - 0.5)
+		alpha = F.softplus(self.beta).to(w.dtype)  # alpha > 0
+		g = 1.0 + alpha * (w - 0.5)
+		# align dtype to feature map for safe AMP/bfloat16 multiplication
+		g = g.to(feat.dtype)
+		out = feat * g
+		return out
 
 	def extra_repr(self) -> str:  # pragma: no cover - simple metadata
 		c = self.cfg
 		return (
 			f"C={c.channels}, gamma={c.gamma}, b={c.b}, k_min={c.k_min}, k_max={c.k_max}, "
-			f"sigmoid_mask={c.use_sigmoid_mask}, tiny_thr={c.tiny_mask_threshold}"
+			f"sigmoid_mask={c.use_sigmoid_mask}, tiny_thr={c.tiny_mask_threshold}, "
+			f"alpha={float(self.alpha.detach()) if hasattr(self, 'beta') else 'NA'}, scale='{self.scale_name}'"
 		)
