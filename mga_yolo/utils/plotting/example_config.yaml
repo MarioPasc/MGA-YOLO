@@ -1,0 +1,23 @@
+
+# Example configuration for model comparison
+# You can use either the 'series' mapping form below or a top-level mapping.
+series:
+  baseline_yolo:
+    name: "YOLOv8-Baseline"
+    type: baseline
+    input:
+      - /home/mpascual/research/results/mga/YOLOv8n_baseline/train_yolov8n_baseline/results_baseline.csv
+    style:
+      color: "#1f77b4"
+      linestyle: "-"
+      marker: "o"
+
+  mga_model:
+    name: "MGA-Detector+Seg"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/masked_eca_withgate/results.csv
+    style:
+      color: "#d62728"
+      linestyle: "-."
+      marker: "s"
