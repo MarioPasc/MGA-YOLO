@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import contextlib
 import os
@@ -9,7 +9,7 @@ import torch
 import cv2
 import numpy as np
 import pandas as pd # type: ignore
-import yaml
+import yaml # type: ignore
 
 from mga_yolo.external.ultralytics.ultralytics.models.yolo.detect.val import DetectionValidator
 from mga_yolo.external.ultralytics.ultralytics.utils import LOGGER
@@ -123,7 +123,17 @@ class MGAValidator(DetectionValidator):
         if self._fm_enabled and not self._fm_hooks:
             self._ensure_fm_hooks()
 
-        out = super().__call__(trainer=trainer, model=self.model)
+
+        # in MGAValidator.__call__
+        orig_format = getattr(self.args, "format", None)
+        try:
+            if getattr(self.args, "format", None):
+                self.args.format = None  # ensure native PyTorch forward for hooks
+            out = super().__call__(trainer=trainer, model=self.model)
+        finally:
+            if orig_format is not None:
+                self.args.format = orig_format
+
         LOGGER.info("[MGAValidator] __call__ finished")
         return out
 
@@ -238,6 +248,153 @@ class MGAValidator(DetectionValidator):
 
     # -------------------------- metrics + saving --------------------------
 
+    # -------------------------- saving primitives --------------------------
+    def _ensure_fm_tensors(self, batch: Dict[str, Any]) -> None:
+        """
+        Ensure self._fm_last is populated for the current batch by forcing a native
+        forward if hooks did not trigger this step (e.g., scripted backend).
+        """
+        if self._fm_last:
+            return
+        imgs = batch.get("img", None)
+        if imgs is None:
+            return
+        try:
+            self.model.eval()
+            use_amp = bool(getattr(self.args, "half", False)) and (self.device.type == "cuda")
+            amp_ctx = torch.cuda.amp.autocast(enabled=use_amp) if use_amp else contextlib.nullcontext()
+            with torch.no_grad(), amp_ctx:
+                _ = self.model(imgs.to(self.device, non_blocking=True))
+            LOGGER.debug("[MGAValidator] forced forward to capture feature maps.")
+        except Exception as e:
+            LOGGER.warning(f"[MGAValidator] forced forward failed: {e}")
+
+    def _save_feature_maps(self, fm_dir: Path, batch: Dict[str, Any]) -> int:
+        """
+        Save captured feature maps for each image in batch to fm_dir.
+        Returns the number of tensors written.
+        """
+        fm_dir.mkdir(parents=True, exist_ok=True)
+        img_tensor = batch.get("img", torch.empty(0))
+        B = int(getattr(img_tensor, "shape", [0])[0]) if hasattr(img_tensor, "shape") else 0
+        im_files = batch.get("im_file", [str(i) for i in range(B)])
+        n_saved = 0
+        for li, t in sorted(self._fm_last.items()):
+            if not torch.is_tensor(t) or t.ndim < 3:
+                continue
+            bsz = t.shape[0]
+            for bi in range(min(B, bsz)):
+                stem = Path(im_files[bi]).stem if isinstance(im_files, (list, tuple)) and len(im_files) > bi else str(bi)
+                out_path = fm_dir / f"{stem}_{li}.pt"
+                torch.save({"layer_index": int(li), "shape": tuple(t[bi].shape), "tensor": t[bi].cpu()}, out_path)
+                n_saved += 1
+        return n_saved
+
+    def _img_tensor_to_bgr(self, t: torch.Tensor) -> np.ndarray:
+        """
+        Convert a single image tensor (C,H,W), float in [0,1], to uint8 BGR HxWxC.
+        """
+        if t.ndim != 3:
+            raise ValueError(f"expected CHW, got shape={tuple(t.shape)}")
+        x = t.detach().float().clamp(0, 1).cpu().numpy()  # CHW, 0..1
+        x = (x * 255.0).round().astype(np.uint8)          # CHW, 0..255
+        x = np.transpose(x, (1, 2, 0))                    # HWC
+        if x.shape[2] == 1:
+            x = np.repeat(x, 3, axis=2)
+        # tensor is RGB; cv2 expects BGR
+        return x[:, :, ::-1]
+
+    def _draw_dets(
+        self,
+        img_bgr: np.ndarray,
+        boxes_xyxy: np.ndarray,
+        cls: np.ndarray,
+        conf: np.ndarray,
+        names: List[str],
+    ) -> np.ndarray:
+        """
+        Draw axis-aligned boxes over an image. Modifies a copy and returns it.
+        """
+        out = img_bgr.copy()
+        n = boxes_xyxy.shape[0]
+        for i in range(n):
+            x1, y1, x2, y2 = boxes_xyxy[i].astype(int).tolist()
+            c = int(cls[i]) if i < cls.shape[0] else 0
+            s = float(conf[i]) if i < conf.shape[0] else 0.0
+            label = f"{names[c] if 0 <= c < len(names) else c}:{s:.2f}"
+            cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2, lineType=cv2.LINE_AA)
+            (tw, th), bl = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+            y1t = max(y1, th + 3)
+            cv2.rectangle(out, (x1, y1t - th - 4), (x1 + tw + 4, y1t), (0, 255, 0), -1)
+            cv2.putText(out, label, (x1 + 2, y1t - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
+        return out
+
+    def _save_preds_and_masks(
+        self,
+        preds_dir: Path,
+        batch: Dict[str, Any],
+        preds: List[Dict[str, torch.Tensor]],
+    ) -> Tuple[int, int]:
+        """
+        Save, for each image in batch:
+          - predicted boxes overlaid on the validation image
+          - available masks in self.last_seg as grayscale PNGs
+        Returns (#overlay_images_saved, #mask_images_saved).
+        """
+        preds_dir.mkdir(parents=True, exist_ok=True)
+        img_tensor = batch.get("img", torch.empty(0))
+        B = int(getattr(img_tensor, "shape", [0])[0]) if hasattr(img_tensor, "shape") else 0
+        im_files = batch.get("im_file", [str(i) for i in range(B)])
+        n_overlays = 0
+        n_masks = 0
+
+        # save overlays using preds in resized image space (same as batch["img"])
+        for bi in range(min(B, len(preds))):
+            stem = Path(im_files[bi]).stem if len(im_files) > bi else str(bi)
+            try:
+                img_bgr = self._img_tensor_to_bgr(img_tensor[bi])
+                p = preds[bi]
+                boxes = p.get("bboxes", torch.zeros((0, 4))).detach().cpu().numpy()
+                conf = p.get("conf", torch.zeros((0,))).detach().cpu().numpy()
+                cls = p.get("cls", torch.zeros((0,))).detach().cpu().numpy()
+                overlay = self._draw_dets(img_bgr, boxes, cls, conf, getattr(self, "names", []))
+                cv2.imwrite(str(preds_dir / f"{stem}_pred.jpg"), overlay)
+                n_overlays += 1
+            except Exception as e:
+                LOGGER.debug(f"[MGAValidator] overlay save failed for {stem}: {e}")
+
+        # save masks if present (same tensor layout you used in plot_predictions)
+        seg = getattr(self, "last_seg", {})
+        if isinstance(seg, dict) and B > 0:
+            for bi in range(B):
+                stem = Path(im_files[bi]).stem if len(im_files) > bi else str(bi)
+                for sk, t in seg.items():
+                    try:
+                        m = t[bi]
+                        if m.ndim == 3 and m.shape[0] == 1:
+                            m = m.squeeze(0)
+                        m = torch.sigmoid(m).detach().cpu().numpy()
+                        if m.ndim == 3:
+                            m = m[0]
+                        m_img = (m * 255).astype(np.uint8)
+                        cv2.imwrite(str(preds_dir / f"{stem}_{sk}.png"), m_img)
+                        n_masks += 1
+                    except Exception as e:
+                        LOGGER.debug(f"[MGAValidator] mask save failed for {stem}/{sk}: {e}")
+        return n_overlays, n_masks
+
+     # -------------------------- helpers --------------------------
+    def _timepoints(self, total_epochs: int) -> np.ndarray:
+        """
+        Compute 4 evaluation timepoints at 25%, 50%, 75%, and 100% of training.
+        Returns a 1D np.ndarray of epoch indices (1-based).
+        """
+        if total_epochs <= 0:
+            return np.array([], dtype=int)
+        q = max(total_epochs // 4, 1)
+        return np.arange(q, total_epochs + q, step=q, dtype=int)
+    # -------------------------- metrics + saving --------------------------
+
     def update_metrics(self, preds: Any, batch: Dict[str, Any]) -> None:
         super().update_metrics(preds, batch)
 
@@ -252,11 +409,18 @@ class MGAValidator(DetectionValidator):
         args_yaml = yaml.safe_load(open(save_dir / "args.yaml")) if (save_dir / "args.yaml").exists() else {}
         total_epochs = int(args_yaml.get("epochs", 0))
         
+        # We are going to save the feature maps in 4 timepoints during training, to examine the evolution. 
+        # One time at 25% trained, 50% trained, 75% trained, and 100% trained
+        _timepoints = self._timepoints(total_epochs)
+        
+        
         if not self._logged_once:
-            LOGGER.info(f"\n[MGAValidator] epoch {current_epoch+1}/{total_epochs}. Only saving FM maps in epoch {total_epochs}.")
+            LOGGER.info(f"\n[MGAValidator] epoch {current_epoch+1}/{total_epochs}. Only saving FM maps in epochs {_timepoints}.")
             self._logged_once = True
             
-        if int(total_epochs) == int(current_epoch+1):
+        if int(current_epoch+1) in _timepoints:
+            _percentage = (current_epoch + 1) / total_epochs * 100
+            LOGGER.info(f"[MGAValidator] Epoch {current_epoch+1} in {_timepoints}. Saving feature maps at {_percentage}% trained network.")
             if not self._fm_enabled or not self._is_main():
                 return
 
@@ -276,13 +440,13 @@ class MGAValidator(DetectionValidator):
             )
 
             # Emergency: force one forward once to populate hooks if empty
-            if not self._fm_last and not self._force_once_done:
+            if not self._fm_last:
                 imgs = batch.get("img", None)
                 if imgs is not None:
                     try:
                         try:
                             p = next(self.model.parameters())
-                            LOGGER.info(
+                            LOGGER.debug(
                                 f"[MGAValidator] force fwd: imgs.dtype={imgs.dtype} dev={imgs.device} "
                                 f"model.dtype={p.dtype} dev={p.device} amp_half={getattr(self.args,'half', False)}"
                             )
@@ -294,52 +458,43 @@ class MGAValidator(DetectionValidator):
                         with torch.no_grad(), amp_ctx:
                             _ = self.model(imgs.to(self.device, non_blocking=True))
                         self._force_once_done = True
-                        LOGGER.info("[MGAValidator] forced one forward to capture FMs.")
+                        LOGGER.debug("[MGAValidator] forced one forward to capture FMs.")
                     except Exception as e:
                         LOGGER.warning(f"[MGAValidator] forced forward failed: {e}")
                 
-                LOGGER.info(f"[MGAValidator] Saving feature maps for batch 0 to disk.")
-                out_dir = save_dir / "val_batch0_fm"
-                out_dir.mkdir(parents=True, exist_ok=True)
-                
-                B = int(batch.get("img", torch.empty(0)).shape[0]) if "img" in batch else 0
-                im_files = batch.get("im_file", [str(i) for i in range(B)])
+            # Save FMs for this timepoint (whether forced or captured normally)
+            LOGGER.debug("[MGAValidator] Saving feature maps to disk.")
+            out_dir = save_dir / "feature_maps" / f"epoch_{current_epoch+1}"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            B = int(batch.get("img", torch.empty(0)).shape[0]) if "img" in batch else 0
+            im_files = batch.get("im_file", [str(i) for i in range(B)])
+            LOGGER.debug(f"[MGAValidator] captured keys this batch: {sorted(self._fm_last.keys())}")
+            LOGGER.debug(f"[MGAValidator] saving feature maps for B={B} images to {out_dir}")
 
-                n_saved = 0
-                LOGGER.info(f"[MGAValidator] captured keys this batch: {sorted(self._fm_last.keys())}")
-                for li, t in sorted(self._fm_last.items()):
-                    if not torch.is_tensor(t) or t.ndim < 3:
-                        continue
-                    bsz = t.shape[0]
-                    for bi in range(min(B, bsz)):
-                        stem = Path(im_files[bi]).stem if isinstance(im_files, (list, tuple)) and len(im_files) > bi else str(bi)
-                        out_path = out_dir / f"{stem}_{li}.pt"
-                        torch.save(
-                            {"layer_index": int(li), "shape": tuple(t[bi].shape), "tensor": t[bi].cpu()},
-                            out_path,
-                        )
-                        n_saved += 1
-                LOGGER.info(f"[MGAValidator] saved {len(os.listdir(out_dir))} tensors to {out_dir}")
+            n_saved = 0
+            for li, t in sorted(self._fm_last.items()):
+                if not torch.is_tensor(t) or t.ndim < 3:
+                    continue
+                bsz = t.shape[0]
+                for bi in range(min(B, bsz)):
+                    stem = Path(im_files[bi]).stem if isinstance(im_files, (list, tuple)) and len(im_files) > bi else str(bi)
+                    out_path = out_dir / f"{stem}_{li}.pt"
+                    torch.save({"layer_index": int(li), "shape": tuple(t[bi].shape), "tensor": t[bi].cpu()}, out_path)
+                    n_saved += 1
+            LOGGER.debug(f"[MGAValidator] saved {len(os.listdir(out_dir))} tensors to {out_dir}")
 
-                # Diagnostics: check MaskECA vs Detect inputs
-                pairs = [(self._fm_layers[0], 280), (self._fm_layers[1], 281), (self._fm_layers[2], 282)]
-                for la, lb in pairs:
-                    ta = self._fm_last.get(la, None)
-                    tb = self._fm_last.get(lb, None)
-                    if isinstance(ta, torch.Tensor) and isinstance(tb, torch.Tensor):
-                        # compare per image 0 to keep it light
-                        try:
-                            msg = self._cmp_t(ta[0], tb[0])
-                        except Exception as _:
-                            msg = "compare_failed"
-                        LOGGER.info(f"[MGAValidator] compare {la} vs {lb}: {msg}")
-                    else:
-                        LOGGER.info(f"[MGAValidator] compare {la} vs {lb}: missing (keys={sorted(self._fm_last.keys())})")
+            # Optional diagnostics
+            pairs = [(self._fm_layers[0], 280), (self._fm_layers[1], 281), (self._fm_layers[2], 282)]
+            for la, lb in pairs:
+                ta = self._fm_last.get(la, None); tb = self._fm_last.get(lb, None)
+                if isinstance(ta, torch.Tensor) and isinstance(tb, torch.Tensor):
+                    try: msg = self._cmp_t(ta[0], tb[0])
+                    except Exception: msg = "compare_failed"
+                    LOGGER.debug(f"[MGAValidator] compare {la} vs {lb}: {msg}")
+                else:
+                    LOGGER.debug(f"[MGAValidator] compare {la} vs {lb}: missing (keys={sorted(self._fm_last.keys())})")
 
-    # -------------------------- postprocess/plots passthrough --------------------------
-
-    
-    # ---------- post/plot ----------
+    # -------------------------- postprocess/plots passthrough --------------------------    
     def postprocess(self, preds):
         if isinstance(preds, dict):
             preds_det = preds.get("det", preds)

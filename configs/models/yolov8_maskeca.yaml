@@ -55,7 +55,7 @@ head:
   - [-1, 2, C3k2, [1024, True]]      # 22 (P5)
 
   # ----------------------------------------------------------------------
-  # MGA ADDITIONS (placeholders)
+  # MGA ADDITIONS 
   # For each scale (P3=15, P4=18, P5=21) we:
   #   1. Predict a scale-specific segmentation mask (or mask features) via MGAMaskHead
   #   2. Apply a mask-guided attention refinement MGAAttention that takes
