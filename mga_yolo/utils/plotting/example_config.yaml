@@ -11,13 +11,26 @@ series:
       color: "#1f77b4"
       linestyle: "-"
       marker: "o"
+      markersize: 2
 
-  mga_model:
-    name: "MGA-Detector+Seg"
+  mga_model_gated:
+    name: "MaskedECA - Gate"
     type: mga
     input:
       - /home/mpascual/research/results/mga/MGA_YOLO/masked_eca_withgate/results.csv
     style:
       color: "#d62728"
-      linestyle: "-."
+      linestyle: "-"
       marker: "s"
+      markersize: 2
+
+  mga_model_nogate:
+    name: "MaskedECA - No Gate"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/masked_eca_nogate/results.csv
+    style:
+      color: "#ddaa33"
+      linestyle: "-"
+      marker: "^"
+      markersize: 2

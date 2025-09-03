@@ -78,6 +78,7 @@ class StyleConfig:
     linestyle: Optional[str] = None
     linewidth: Optional[float] = None
     marker: Optional[str] = None
+    markersize: Optional[float] = None
 
     def to_matplotlib_kwargs(self) -> Dict[str, object]:
         """Convert to matplotlib.plot kwargs, omitting None values."""
@@ -90,6 +91,8 @@ class StyleConfig:
             out['linewidth'] = self.linewidth
         if self.marker is not None:
             out['marker'] = self.marker
+        if self.markersize is not None:
+            out['markersize'] = self.markersize
         return out
 
 
@@ -136,6 +139,7 @@ def _parse_series_mapping(series_id: str, payload: Mapping) -> DataSeriesConfig:
         linestyle=style_raw.get('linestyle'),
         linewidth=style_raw.get('linewidth'),
         marker=style_raw.get('marker'),
+        markersize=style_raw.get('markersize'),
     )
 
     input_paths = [Path(str(p)).expanduser() for p in inputs]
@@ -382,7 +386,7 @@ def fig_detection(series_cfgs: List[DataSeriesConfig],
     # Single legend outside
     handles, labels = axes[0, 0].get_legend_handles_labels()
     if handles:
-        fig.legend(handles, labels, loc="lower center", ncol=min(4, len(labels)))
+        fig.legend(handles, labels, loc="lower center", ncol=min(4, len(labels)), bbox_to_anchor=(0.5, -0.06))
     return fig
 
 
@@ -480,7 +484,7 @@ def fig_segmentation(series_cfgs: List[DataSeriesConfig],
     # Legend
     handles, labels = axes[0, 0].get_legend_handles_labels()
     if handles:
-        fig.legend(handles, labels, loc="lower center", ncol=min(4, len(labels)))
+        fig.legend(handles, labels, loc="lower center", ncol=min(4, len(labels)), bbox_to_anchor=(0.5, -0.04))
     return fig
 
 
@@ -514,7 +518,7 @@ def fig_performance(series_cfgs: List[DataSeriesConfig],
 
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:
-        fig.legend(handles, labels, loc="lower center", ncol=min(4, len(labels)))
+        fig.legend(handles, labels, loc="lower center", ncol=min(4, len(labels)), bbox_to_anchor=(0.5, -0.1))
     return fig
 
 
