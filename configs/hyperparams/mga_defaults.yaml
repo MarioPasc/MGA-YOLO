@@ -16,10 +16,10 @@
 
 task: mga 
 mode: train 
-model: configs/models/yolov8m_maskeca.yaml
+model: configs/models/yolov8n_maskeca.yaml
 data: configs/data/mga_data.yaml 
 epochs: 100 
-name: "masked_eca_withgate"
+name: "masked_eca_yolov8n_withgate"
 
 # Mask-Related Hyperparameters
 MGA_MASK_METHOD: area

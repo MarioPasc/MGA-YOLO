@@ -145,7 +145,6 @@ class MGATrainer(DetectionTrainer):
         self.scaler.scale(loss).backward()
         return loss
     
-    # trainer.py
     def get_validator(self):
         from mga_yolo.model.validator import MGAValidator
         v = MGAValidator(self.test_loader, save_dir=self.save_dir, args=self.args, _callbacks=self.callbacks)

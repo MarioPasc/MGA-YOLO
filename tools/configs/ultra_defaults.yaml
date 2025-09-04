@@ -2,8 +2,13 @@
 
 task: detection 
 mode: train 
-model: yolov8n
-data: /home/mpascual/research/code/MGA-YOLO/configs/data/ultra_data.yaml 
+model: yolov8m
+data: /home/mpascual/research/code/MGA-YOLO/tools/configs/ultra_data.yaml 
+epochs: 100
+
+BASE_FM_SAVE: true
+BASE_FM_LAYERS: "15,18,21"
+BASE_FM_MAX: 4
 
 # Hyperparameters ------------------------------------------------------------------------------------------------------
 
@@ -48,7 +53,6 @@ pose: 0.0 # (float) pose loss gain
 kobj: 0.0 # (float) keypoint obj loss gain
 
 # Train settings -------------------------------------------------------------------------------------------------------
-epochs: 100 # (int) number of epochs to train for
 time: # (float, optional) number of hours to train for, overrides epochs if supplied
 patience: 100 # (int) epochs to wait for no observable improvement for early stopping of training
 batch: 4 # (int) number of images per batch (-1 for AutoBatch)
@@ -59,7 +63,7 @@ cache: False # (bool) True/ram, disk or False. Use cache for data loading
 device: 0 # (int | str | list) device: CUDA device=0 or [0,1,2,3] or "cpu/mps" or -1 or [-1,-1] to auto-select idle GPUs
 workers: 0 # (int) number of worker threads for data loading (per RANK if DDP)
 project: "/home/mpascual/research/results/mga/YOLOv8n_baseline" # (str, optional) project name
-name: "train_yolov8n_baseline" # (str, optional) experiment name, results saved to 'project/name' directory
+name: "train_yolov8m_baseline" # (str, optional) experiment name, results saved to 'project/name' directory
 exist_ok: False # (bool) whether to overwrite existing experiment
 pretrained: True # (bool | str) whether to use a pretrained model (bool) or a model to load weights from (str)
 verbose: True # (bool) whether to print verbose output
@@ -84,9 +88,11 @@ dropout: 0.0 # (float) use dropout regularization (classify train only)
 # Val/Test settings ----------------------------------------------------------------------------------------------------
 val: True # (bool) validate/test during training
 split: val # (str) dataset split to use for validation, i.e. 'val', 'test' or 'train'
+
+conf: 0.25 # (float, optional) object confidence threshold for detection (default 0.25 predict, 0.001 val)
+iou: 0.5 # (float) intersection over union (IoU) threshold for NMS
+
 save_json: False # (bool) save results to JSON file
-conf: # (float, optional) object confidence threshold for detection (default 0.25 predict, 0.001 val)
-iou: 0.7 # (float) intersection over union (IoU) threshold for NMS
 max_det: 300 # (int) maximum number of detections per image
 half: False # (bool) use half precision (FP16)
 dnn: False # (bool) use OpenCV DNN for ONNX inference

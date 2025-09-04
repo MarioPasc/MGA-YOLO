@@ -41,7 +41,7 @@ def _to_env_string(value: Any) -> str | None:
         return str(value)
 
 
-def apply_mga_env_from_config(
+def apply_env_from_config(
     config: Mapping[str, Any], *, prefix: str = "MGA_", overwrite: bool = True
 ) -> Dict[str, Any]:
     """
