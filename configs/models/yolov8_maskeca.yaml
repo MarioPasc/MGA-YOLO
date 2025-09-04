@@ -1,4 +1,4 @@
-# MGA-YOLO custom architecture YAML (placeholder implementation)
+# MGA-YOLO custom architecture YAML
 # This file extends a standard YOLOv8 style detection model by inserting
 # per-scale mask (segmentation) heads and Mask-Guided Attention (MGA) refinement
 # modules at the P3, P4 and P5 feature map levels before the final Detect head.

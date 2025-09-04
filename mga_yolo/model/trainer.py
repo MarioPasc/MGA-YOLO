@@ -348,6 +348,8 @@ class MGATrainer(DetectionTrainer):
                 if k in m:
                     return m[k]
             return 0.0
+        
+        
         box = pick(d, "box", "box_loss")
         cls_ = pick(d, "cls", "cls_loss")
         dfl = pick(d, "dfl", "dfl_loss")
