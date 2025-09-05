@@ -18,57 +18,32 @@ class MGATrainer(DetectionTrainer):
     """
 
     def set_model_attributes(self) -> None:
+        """
+        Extend parent setup. Also attach learnable homoscedastic-uncertainty
+        parameters (log-variances) to the model so the optimizer sees them.
+        """
         super().set_model_attributes()
-        if not hasattr(self, "seg_loss"):
-            self.init_losses()
-        # Lightweight console feedback about MGA specifics
+        # attach 2-task log-variance vector [det, seg] on the model
+        import torch, torch.nn as nn
+        m = getattr(self, "model", None)
+        if m is not None and not hasattr(m, "mtl_log_vars"):
+            # s_i = log(sigma_i^2); initialized to 0 => weight ~ 1.0
+            m.mtl_log_vars = nn.Parameter(torch.zeros(2, dtype=torch.float32))
+        # lightweight feedback on MGA heads
         try:
-            m = getattr(self, "model", None)
-            mask_info: List[int] = getattr(m, "mga_mask_indices", []) or []
+            mask_info = getattr(m, "mga_mask_indices", []) or []
             if mask_info:
                 LOGGER.info(f"[MGA] Detected MGAMaskHead layers at indices: {mask_info}")
         except Exception:
             pass
 
-    def init_losses(self) -> None:
-        """
-        Initialize loss objects.
-        Call after model is built. DetectionTrainer usually builds self.compute_loss.
-        """
-        # Parent prepares detection loss via self.model.init_criterion() internally.
-        # We just add segmentation.
-        args = self.args
-        seg_cfg = SegLossConfig(
-            bce_weight=getattr(args, "seg_bce_weight", 1.0),
-            dice_weight=getattr(args, "seg_dice_weight", 1.0),
-            scale_weights=getattr(args, "seg_scale_weights", [1.0, 1.0, 1.0]),
-            smooth=getattr(args, "seg_smooth", 1.0),
-            loss_lambda=getattr(args, "seg_loss_lambda", 1.0),
-            enabled=getattr(args, "seg_enable", True),
-        )
-        self.seg_loss = SegmentationLoss(seg_cfg)
-        # Console feedback on segmentation loss configuration
-        try:
-            LOGGER.info(
-                "[MGA] SegmentationLoss configured: enabled=%s, bce=%.3f, dice=%.3f, lambda=%.3f, smooth=%.3f, scale_weights=%s",
-                seg_cfg.enabled,
-                seg_cfg.bce_weight,
-                seg_cfg.dice_weight,
-                seg_cfg.loss_lambda,
-                seg_cfg.smooth,
-                list(seg_cfg.scale_weights),
-            )
-        except Exception:
-            pass
-        # Extend loss names for logging (order matters)
-        # Force canonical detection names to align with MGAModel.loss items: [box, cls, dfl]
         base_names = ["box", "cls", "dfl"]
         extra_names = ["p3_bce", "p3_dice", "p4_bce", "p4_dice", "p5_bce", "p5_dice", "seg_total"]
-        # Avoid duplicates if re-init
         for n in extra_names:
             if n not in base_names:
                 base_names.append(n)
         self.loss_names = base_names
+
 
     def build_dataset(self, img_path: str, mode: str = "train", batch: int | None = None):
         """Dataset building unchanged, just delegate."""
@@ -98,52 +73,9 @@ class MGATrainer(DetectionTrainer):
                     moved.append(t.float())
             batch["masks_multi"] = moved
         return batch
-    
-    def criterion(self, preds, batch):  # overrides DetectionTrainer.criterion
-        """
-        Compute combined detection + segmentation loss.
-        preds: dict {'det': det_preds, 'seg': {...}} or raw detection output.
-        """
-        if isinstance(preds, dict):
-            det_preds = preds["det"]
-            seg_preds = preds.get("seg", {})
-        else:
-            det_preds = preds
-            seg_preds = {}
 
-        # 1. Detection loss (calls parent logic via self.compute_loss)
-        det_loss, det_loss_items = self.compute_loss(det_preds, batch)
-        # det_loss_items tensor length matches base detection loss_names subset
-
-        # 2. Segmentation loss (if enabled)
-        seg_total = torch.zeros_like(det_loss)
-        seg_logs: Dict[str, float] = {}
-        if isinstance(seg_preds, dict) and seg_preds and batch.get("masks_multi"):
-            seg_total, seg_logs = self.seg_loss(seg_preds, batch["masks_multi"])
-
-        total = det_loss + seg_total
-
-        # Assemble logging items aligned to self.loss_names
-        # Start with detection components already in det_loss_items
-        loss_item_list = det_loss_items.tolist() if hasattr(det_loss_items, "tolist") else list(det_loss_items)
-        # Append segmentation components in order (bce/dice per scale + seg_total)
-        for key in ["p3_bce", "p3_dice", "p4_bce", "p4_dice", "p5_bce", "p5_dice"]:
-            loss_item_list.append(seg_logs.get(key, 0.0))
-        loss_item_list.append(seg_logs.get("seg_total", float(seg_total.detach())))
-
-        # Convert back to tensor on same device for trainer logging expectations
-        self.loss_items = torch.as_tensor(loss_item_list, device=total.device)
-        return total
-
-    def train_step(self, batch: Dict[str, Any]):
-        """
-        Override to handle dict preds seamlessly while reusing mixed precision, etc.
-        """
-        with torch.cuda.amp.autocast(enabled=self.amp):
-            preds = self.model(batch["img"])
-            loss = self.criterion(preds, batch)
-        self.scaler.scale(loss).backward()
-        return loss
+    def train_step(self, batch):
+        return super().train_step(batch)  # rely on model.loss
     
     def get_validator(self):
         from mga_yolo.model.validator import MGAValidator
@@ -155,77 +87,14 @@ class MGATrainer(DetectionTrainer):
         LOGGER.info("[MGATrainer] Using MGAValidator")
         return v
 
-
-    def resume_training(self, ckpt):
-        super().resume_training(ckpt)
-        # Re-init seg loss if resuming (optional safeguard)
-        if not hasattr(self, "seg_loss"):
-            self.init_losses()
-
-    # Replace checkpoint serialization with a minimal, pickle-safe writer (state_dict-only)
-    def save_model(self):  # type: ignore[override]
-        try:
-            if not getattr(self.args, "save", True):
-                return
-            # Helper to recursively sanitize objects for pickle/torch.save
-            from types import SimpleNamespace
-            import pathlib
-            import numbers
-
-            def _strip_all_hooks(m: nn.Module) -> None:
-                # Remove all forward/pre/backward hooks so the module is picklable
-                for sub in m.modules():
-                    d = getattr(sub, "_forward_hooks", None)
-                    if isinstance(d, dict): d.clear()
-                    d = getattr(sub, "_forward_pre_hooks", None)
-                    if isinstance(d, dict): d.clear()
-                    d = getattr(sub, "_backward_hooks", None)
-                    if isinstance(d, dict): d.clear()
-
-            # Build a torch.save-compatible checkpoint so downstream tools can load it
-            model_to_save = deepcopy(self.model).half().cpu()
-            _strip_all_hooks(model_to_save)
-
-            ema_to_save = None
-            if getattr(self, "ema", None) and getattr(self.ema, "ema", None) is not None:
-                ema_to_save = deepcopy(self.ema.ema).half().cpu()
-                _strip_all_hooks(ema_to_save)
-
-            ckpt = {
-                "epoch": int(self.epoch),
-                "best_fitness": float(self.best_fitness or 0.0),
-                "model": model_to_save,          # full, picklable
-                "ema": ema_to_save,              # optional
-                "optimizer": (self.optimizer.state_dict() if getattr(self, "optimizer", None) else None),
-                "train_args": vars(self.args),
-                "train_metrics": self.metrics or {},
-            }
-            torch.save(ckpt, self.last)
-        except Exception as e:
-            try:
-                LOGGER.warning(f"[MGA] Skipping checkpoint save due to error: {e}")
-            except Exception:
-                pass
-            return
-
     # --- Logging extensions -------------------------------------------------
-    def save_metrics(self, metrics):  # type: ignore[override]
+    def save_metrics(self, metrics):
         """
-        Write ONE file: results.csv, containing:
-        - epoch number
-        - TRAIN losses: train/det/{total,box,dfl,cls}, train/seg/{total,p3_bce,p3_dice,p4_bce,p4_dice,p5_bce,p5_dice}
-        - VAL losses  : val/det/{total,box,dfl,cls},   val/seg/{total,p3_bce,p3_dice,p4_bce,p4_dice,p5_bce,p5_dice}
-        - Plus any additional keys from `metrics` (e.g., precision/recall/mAP, learning rates), preserved as-is.
+        Append per-epoch metrics to results.csv and log learned task weights.
         """
-        # Build the row
-        row: Dict[str, float] = {"epoch": float(self.epoch + 1)}
-
-        # TRAIN epoch means from tloss/loss_names
+        row = {"epoch": float(self.epoch + 1)}
         row.update(self._collect_train_epoch_losses())
-
-        # Static parameters snapshot (per-epoch):
-        # - MaskECA alphas, if any MaskECA present
-        # - MaskSPADE gamma/beta stats, if any MaskSPADE present
+        
         try:
             row.update(self._collect_alpha_params())
         except Exception:
@@ -234,103 +103,45 @@ class MGATrainer(DetectionTrainer):
             row.update(self._collect_gamma_beta_params())
         except Exception:
             pass
-
-        # VAL epoch metrics returned by validator
+        
         if isinstance(metrics, dict):
             row.update(self._collect_val_epoch_losses(metrics))
-            # Also preserve any additional metrics the validator produced (e.g., 'metrics/mAP50(B)')
-            # without overwriting our keys.
             for k, v in metrics.items():
                 if k not in row:
                     try:
                         row[k] = float(v)
                     except Exception:
-                        # keep only numeric values in results.csv
                         continue
-
-        # Write results.csv (append; create header on first write)
+        # learned uncertainty terms
         try:
-            import csv
-            from pathlib import Path
-            save_dir = Path(getattr(self, "save_dir", "."))
-            csv_path = save_dir / "results.csv"
+            lv = getattr(self.model, "mtl_log_vars", None)
+            if isinstance(lv, torch.Tensor) and lv.numel() >= 2:
+                row["mtl/sigma2_det"] = float(torch.exp(lv[0]).detach().cpu())
+                row["mtl/sigma2_seg"] = float(torch.exp(lv[1]).detach().cpu())
+                row["mtl/w_det"] = float(torch.exp(-lv[0]).detach().cpu())
+                row["mtl/w_seg"] = float(torch.exp(-lv[1]).detach().cpu())
+        except Exception:
+            pass
 
-            # Stable header order: epoch, TRAIN..., VAL..., ALPHAS..., then any extra metrics
-            train_keys = [
-                "train/det/total", "train/det/box", "train/det/dfl", "train/det/cls",
-                "train/seg/total",
-                "train/seg/p3_bce", "train/seg/p3_dice",
-                "train/seg/p4_bce", "train/seg/p4_dice",
-                "train/seg/p5_bce", "train/seg/p5_dice",
-            ]
-            val_keys = [
-                "val/det/total", "val/det/box", "val/det/dfl", "val/det/cls",
-                "val/seg/total",
-                "val/seg/p3_bce", "val/seg/p3_dice",
-                "val/seg/p4_bce", "val/seg/p4_dice",
-                "val/seg/p5_bce", "val/seg/p5_dice",
-            ]
-            alpha_keys = ["alpha_P3", "alpha_P4", "alpha_P5"]
-            spade_keys = [
-                "spade/P3/gamma_mean", "spade/P3/gamma_std", "spade/P3/beta_mean", "spade/P3/beta_std",
-                "spade/P4/gamma_mean", "spade/P4/gamma_std", "spade/P4/beta_mean", "spade/P4/beta_std",
-                "spade/P5/gamma_mean", "spade/P5/gamma_std", "spade/P5/beta_mean", "spade/P5/beta_std",
-            ]
-            fixed = ["epoch"] + train_keys + val_keys + alpha_keys + spade_keys
-            extras = [k for k in row.keys() if k not in fixed]
-            header = fixed + sorted(extras)
-
-            write_header = not csv_path.exists()
-            with csv_path.open("a", newline="") as f:
-                w = csv.DictWriter(f, fieldnames=header, extrasaction="ignore")
-                if write_header:
-                    w.writeheader()
-                # Ensure all header fields exist in row (fill missing with 0.0)
-                complete_row = {h: row.get(h, 0.0) for h in header}
-                w.writerow(complete_row)
-        except Exception as e:
-            try:
-                LOGGER.warning(f"[MGA] Failed writing results.csv: {e}")
-            except Exception:
-                pass
-
-    def _log_losses_csv(self) -> None:
-        # Deprecated: we now write everything into results.csv
-        return
-
-
-    def after_epoch(self):  # type: ignore[override]
-        super().after_epoch()
-        self._log_losses_csv()
-
-    # Match Ultralytics API: print a richer header including our extra loss names
-    def progress_string(self) -> str:  # type: ignore[override]
-        names = tuple(self.loss_names) if hasattr(self, "loss_names") else ("box_loss", "cls_loss", "dfl_loss")
-        return ("\n" + "%11s" * (4 + len(names))) % (
-            "Epoch",
-            "GPU_mem",
-            *names,
-            "Instances",
-            "Size",
-        )
-
-    def final_eval(self):  # type: ignore[override]
-        """Run final evaluation using the in-memory model to avoid checkpoint dependency."""
-        try:
-            model = self.ema.ema if getattr(self, "ema", None) and getattr(self.ema, "ema", None) is not None else self.model
-            if model is None or self.validator is None:
-                return
-            self.validator.args.plots = getattr(self.args, "plots", False)
-            self.metrics = self.validator(model=model)
-            # Align with Ultralytics: drop 'fitness' if present and trigger callback
-            if isinstance(self.metrics, dict):
-                self.metrics.pop("fitness", None)
-            self.run_callbacks("on_fit_epoch_end")
-        except Exception as e:
-            try:
-                LOGGER.warning(f"[MGA] final_eval failed: {e}")
-            except Exception:
-                pass
+        import csv
+        from pathlib import Path
+        csv_path = Path(getattr(self, "save_dir", ".")) / "results.csv"
+        header_order = [
+            "epoch",
+            "train/det/total","train/det/box","train/det/dfl","train/det/cls",
+            "train/seg/total","train/seg/p3_bce","train/seg/p3_dice","train/seg/p4_bce","train/seg/p4_dice","train/seg/p5_bce","train/seg/p5_dice",
+            "val/det/total","val/det/box","val/det/dfl","val/det/cls",
+            "val/seg/total","val/seg/p3_bce","val/seg/p3_dice","val/seg/p4_bce","val/seg/p4_dice","val/seg/p5_bce","val/seg/p5_dice",
+            "mtl/sigma2_det","mtl/sigma2_seg","mtl/w_det","mtl/w_seg"
+        ]
+        extras = [k for k in row.keys() if k not in header_order]
+        header = header_order + sorted(extras)
+        write_header = not csv_path.exists()
+        with open(csv_path, "a", newline="") as f:
+            w = {k: row.get(k, None) for k in header}
+            if write_header:
+                csv.DictWriter(f, fieldnames=list(w.keys())).writeheader()
+            csv.DictWriter(f, fieldnames=list(w.keys())).writerow(w)
     
     def _collect_train_epoch_losses(self) -> Dict[str, float]:
         """
@@ -538,3 +349,69 @@ class MGATrainer(DetectionTrainer):
             return out if any_found else out
         except Exception:
             return out
+
+    def save_model(self) -> None:
+        """
+        Save pure-state checkpoints to avoid pickling any classes.
+        Produces weights/last.pt and weights/best.pt.
+        """
+        from mga_yolo.external.ultralytics.ultralytics.utils.patches import torch_save  # Ultralytics wrapper
+
+        (self.save_dir / "weights").mkdir(parents=True, exist_ok=True)
+        last_pt = self.save_dir / "weights" / "last.pt"
+        best_pt = self.save_dir / "weights" / "best.pt"
+
+        # Gather state
+        model_state = self.model.state_dict()
+        ema = getattr(self, "ema", None)
+        ema_state = (getattr(ema, "ema", None) or ema)
+        ema_state = ema_state.state_dict() if ema_state is not None else None
+        opt_state = self.optimizer.state_dict() if getattr(self, "optimizer", None) else None
+
+        # Minimal, JSON-serializable metadata
+        meta = {
+            "epoch": int(getattr(self, "epoch", -1)),
+            "best_fitness": float(getattr(self, "best_fitness", 0.0)),
+            "imgsz": getattr(self.args, "imgsz", None),
+            "overrides": dict(vars(getattr(self.model, "args", type("A", (), {})())))  # to plain dict if present
+        }
+
+        ckpt = {
+            "model_state": model_state,
+            "ema_state": ema_state,
+            "optimizer_state": opt_state,
+            "metadata_json": __import__("json").dumps(meta),
+        }
+
+        torch_save(ckpt, last_pt)
+        torch_save(ckpt, best_pt)
+
+
+    # Match Ultralytics API: print a richer header including our extra loss names
+    def progress_string(self) -> str:  # type: ignore[override]
+        names = tuple(self.loss_names) if hasattr(self, "loss_names") else ("box_loss", "cls_loss", "dfl_loss")
+        return ("\n" + "%11s" * (4 + len(names))) % (
+            "Epoch",
+            "GPU_mem",
+            *names,
+            "Instances",
+            "Size",
+        )
+
+    def final_eval(self):  # type: ignore[override]
+        """Run final evaluation using the in-memory model to avoid checkpoint dependency."""
+        try:
+            model = self.ema.ema if getattr(self, "ema", None) and getattr(self.ema, "ema", None) is not None else self.model
+            if model is None or self.validator is None:
+                return
+            self.validator.args.plots = getattr(self.args, "plots", False)
+            self.metrics = self.validator(model=model)
+            # Align with Ultralytics: drop 'fitness' if present and trigger callback
+            if isinstance(self.metrics, dict):
+                self.metrics.pop("fitness", None)
+            self.run_callbacks("on_fit_epoch_end")
+        except Exception as e:
+            try:
+                LOGGER.warning(f"[MGA] final_eval failed: {e}")
+            except Exception:
+                pass

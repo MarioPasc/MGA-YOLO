@@ -255,6 +255,22 @@ class BaseTrainer:
         self.model = self.model.to(self.device)
         self.set_model_attributes()
 
+        # Append model.info() outputs into args.yaml once the model is built
+        if RANK in {-1, 0}:
+            try:
+                basic_info = self.model.info(detailed=False, verbose=False)
+                detailed_info = self.model.info(detailed=True, verbose=False)
+                args_path = self.save_dir / "args.yaml"
+                args_dict = YAML.load(args_path)
+                # Store as multiline strings for readability
+                args_dict["model_info"] = "\n".join(basic_info) if isinstance(basic_info, (list, tuple)) else str(basic_info)
+                args_dict["model_info_detailed"] = (
+                    "\n".join(detailed_info) if isinstance(detailed_info, (list, tuple)) else str(detailed_info)
+                )
+                YAML.save(args_path, args_dict)
+            except Exception as e:
+                LOGGER.warning(f"Failed to write model.info() to args.yaml: {e}")
+
         # Freeze layers
         freeze_list = (
             self.args.freeze

@@ -3,10 +3,10 @@
 # You can use either the 'series' mapping form below or a top-level mapping.
 series:
   baseline_yolo:
-    name: "YOLOv8m"
+    name: "YOLOv8s"
     type: baseline
     input:
-      - /home/mpascual/research/results/mga/Baseline/YOLOv8m/results.csv
+      - /home/mpascual/research/results/mga/Baseline/YOLOv8s/results.csv
     style:
       color: "#1f77b4"
       linestyle: "-"
@@ -14,10 +14,10 @@ series:
       markersize: 2
 
   masked_eca:
-    name: "MaskedECA-YOLOv8m"
+    name: "MaskedECA-YOLOv8s-Kendall-noUFL"
     type: mga
     input:
-      - /home/mpascual/research/results/mga/MGA_YOLO/results/MaskedECA_YOLOv8m/results.csv
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_noUFL_MaskedECA_YOLOv8s/results.csv
     style:
       color: "#d62728"
       linestyle: "-"
@@ -25,10 +25,10 @@ series:
       markersize: 2
 
   masked_spade:
-    name: "MaskedSPADE-YOLOv8m"
+    name: "MaskedSPADE-YOLOv8s-Kendall-noUFL"
     type: mga
     input:
-      - /home/mpascual/research/results/mga/MGA_YOLO/results/MaskedSPADE_YOLOv8m/results.csv
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_noUFL_MaskedSPADE_YOLOv8s/results.csv
     style:
       color: "#ddaa33"
       linestyle: "-"

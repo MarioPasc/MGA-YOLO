@@ -16,10 +16,10 @@
 
 task: mga 
 mode: train 
-model: configs/models/yolov8m_spade.yaml
+model: configs/models/yolov8s_eca.yaml
 data: configs/data/mga_data.yaml 
 epochs: 100
-name: "MaskedSPADE_YOLOv8m"
+name: "Kendall_UFL_MaskedECA_YOLOv8s"
 project: "/home/mpascual/research/results/mga/MGA_YOLO" 
 
 # Mask-Related Hyperparameters
@@ -47,14 +47,19 @@ nbs: 64 # (int) nominal batch size
 box: 7.5 # (float) box loss gain
 cls: 0.5 # (float) cls loss gain (scale with pixels)
 dfl: 1.5 # (float) dfl loss gain
-seg_bce_weight: 1.0 # (float) Weight of Binary Cross-Entropy loss on segmentation loss
-seg_dice_weight: 1.0 # (float) Weight of Dice loss on segmentation loss
-seg_loss_lambda: 1.0 # Loss lambda for segmentation loss when combined with detection loss
+bce_weight: 1.0 # (float) Weight of Binary Cross-Entropy loss on segmentation loss
+dice_weight: 1.0 # (float) Weight of Dice loss on segmentation loss
+loss_lambda: 1.0 # Loss lambda for segmentation loss when combined with detection loss
 
 ## Segmentation head-related hyperparameters ##
-seg_enable: True # Enable segmentation heads
-seg_scale_weights: [1.0, 1.0, 1.0] # Scale weights for segmentation loss
-seg_smooth: 1.0 # Smoothing factor for segmentation
+enabled: True # Enable segmentation heads
+scale_weights: [1.0, 1.0, 1.0] # Scale weights for segmentation loss
+smooth: 1.0 # Smoothing factor for segmentation
+# Unified Focal Loss toggles
+use_unified_focal: True
+ufl_lambda: 0.5   # λ in LsUF
+ufl_delta: 0.6    # δ balance
+ufl_gamma: 0.5    # γ focus
 
 ## Enabled augmentation hyperparameters ##
 translate: 0.2 # (float) image translation (+/- fraction)

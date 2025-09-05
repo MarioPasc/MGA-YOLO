@@ -1,0 +1,78 @@
+# S-Series
+series:
+  masked_eca:
+    name: "MaskedECA-YOLOv8s"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/MaskedECA_YOLOv8s/results.csv
+    style:
+      color: "#A2F49B"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  masked_eca_kendall_noufl:
+    name: "MaskedECA-YOLOv8s-Kendall-noUFL"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_noUFL_MaskedECA_YOLOv8s/results.csv
+    style:
+      color: "#BBE453"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  masked_eca_kendall_ufl:
+    name: "MaskedECA-YOLOv8s-Kendall-UFL"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_UFL_MaskedECA_YOLOv8s/results.csv
+    style:
+      color: "#D5CE04"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  masked_spade:
+    name: "MaskedSPADE-YOLOv8s"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/MaskedSPADE_YOLOv8s/results.csv
+    style:
+      color: "#F19903"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  masked_spade_noUFL:
+    name: "MaskedSPADE-YOLOv8s-Kendall-noUFL"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_noUFL_MaskedSPADE_YOLOv8s/results.csv
+    style:
+      color: "#F6790B"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  masked_spade_ufl:
+    name: "MaskedSPADE-YOLOv8s-Kendall-UFL"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_UFL_MaskedSPADE_YOLOv8s/results.csv
+    style:
+      color: "#F94902"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  baseline_yolo:
+    name: "YOLOv8s"
+    type: baseline
+    input:
+      - /home/mpascual/research/results/mga/Baseline/YOLOv8s/results.csv
+    style:
+      color: "#A80003"
+      linestyle: "-"
+      marker: "o"
+      markersize: 1.5

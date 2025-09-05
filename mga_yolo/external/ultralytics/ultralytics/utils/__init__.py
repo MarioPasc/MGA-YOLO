@@ -774,12 +774,17 @@ DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
 # These keys are read by MGATrainer.init_losses; adding them here makes them valid YOLO args.
 DEFAULT_CFG_DICT.update(
     {
-        "seg_enable": True,
-        "seg_bce_weight": 1.0,
-        "seg_dice_weight": 1.0,
-        "seg_scale_weights": [1.0, 1.0, 1.0],
-        "seg_loss_lambda": 1.0,
-        "seg_smooth": 1.0,
+        "bce_weight": 1.0,
+        "dice_weight": 1.0,
+        "scale_weights": [1.0, 1.0, 1.0],
+        "smooth": 1.0,
+        "loss_lambda": 1.0,
+        "enabled": True,
+        # Unified Focal Loss toggles
+        "use_unified_focal": False,
+        "ufl_lambda": 0.5,   # λ in LsUF
+        "ufl_delta": 0.6,    # δ balance
+        "ufl_gamma": 0.5,    # γ focus
     }
 )
 DEFAULT_CFG_KEYS = DEFAULT_CFG_DICT.keys()
