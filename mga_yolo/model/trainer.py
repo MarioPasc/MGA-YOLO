@@ -223,8 +223,17 @@ class MGATrainer(DetectionTrainer):
         # TRAIN epoch means from tloss/loss_names
         row.update(self._collect_train_epoch_losses())
 
-        # Static parameters snapshot (per-epoch): residual gate alphas from MaskECA blocks
-        row.update(self._collect_alpha_params())
+        # Static parameters snapshot (per-epoch):
+        # - MaskECA alphas, if any MaskECA present
+        # - MaskSPADE gamma/beta stats, if any MaskSPADE present
+        try:
+            row.update(self._collect_alpha_params())
+        except Exception:
+            pass
+        try:
+            row.update(self._collect_gamma_beta_params())
+        except Exception:
+            pass
 
         # VAL epoch metrics returned by validator
         if isinstance(metrics, dict):
@@ -262,7 +271,12 @@ class MGATrainer(DetectionTrainer):
                 "val/seg/p5_bce", "val/seg/p5_dice",
             ]
             alpha_keys = ["alpha_P3", "alpha_P4", "alpha_P5"]
-            fixed = ["epoch"] + train_keys + val_keys + alpha_keys
+            spade_keys = [
+                "spade/P3/gamma_mean", "spade/P3/gamma_std", "spade/P3/beta_mean", "spade/P3/beta_std",
+                "spade/P4/gamma_mean", "spade/P4/gamma_std", "spade/P4/beta_mean", "spade/P4/beta_std",
+                "spade/P5/gamma_mean", "spade/P5/gamma_std", "spade/P5/beta_mean", "spade/P5/beta_std",
+            ]
+            fixed = ["epoch"] + train_keys + val_keys + alpha_keys + spade_keys
             extras = [k for k in row.keys() if k not in fixed]
             header = fixed + sorted(extras)
 
@@ -443,9 +457,11 @@ class MGATrainer(DetectionTrainer):
                 return out
             # Late import to avoid circular imports on trainer init
             from mga_yolo.nn.modules.masked_eca import MaskECA  # type: ignore
+            has_any = False
             found = []  # list of tuples (name_or_None, channels_or_None, alpha_value)
             for m in model.modules():
                 if isinstance(m, MaskECA):
+                    has_any = True
                     name = getattr(m, "scale_name", None)
                     ch = getattr(getattr(m, "cfg", None), "channels", None)
                     try:
@@ -455,6 +471,9 @@ class MGATrainer(DetectionTrainer):
                         alpha_val = None
                     if alpha_val is not None:
                         found.append((name, ch, alpha_val))
+
+            if not has_any:
+                return {"alpha_P3": 0.0, "alpha_P4": 0.0, "alpha_P5": 0.0}
 
             # First fill by explicit names if any
             for name, ch, alpha_val in found:
@@ -473,3 +492,49 @@ class MGATrainer(DetectionTrainer):
             # keep defaults
             pass
         return out
+
+    def _collect_gamma_beta_params(self) -> Dict[str, float]:
+        """Aggregate gamma/beta statistics from MaskSPADE modules if present.
+
+        Returns keys like 'spade/P3/gamma_mean', 'spade/P3/gamma_std', same for beta.
+        If absent, returns zeros for P3/P4/P5.
+        """
+        out: Dict[str, float] = {}
+        # initialize zeros to keep headers stable
+        def init_scale(scale: str):
+            out[f"spade/{scale}/gamma_mean"] = 0.0
+            out[f"spade/{scale}/gamma_std"] = 0.0
+            out[f"spade/{scale}/beta_mean"] = 0.0
+            out[f"spade/{scale}/beta_std"] = 0.0
+        for s in ("P3", "P4", "P5"):
+            init_scale(s)
+
+        try:
+            model = self.ema.ema if getattr(self, "ema", None) and getattr(self.ema, "ema", None) is not None else self.model
+            if model is None:
+                return out
+            from mga_yolo.nn.modules.masked_spade import MaskSPADE  # type: ignore
+            any_found = False
+            # Collect running stats of conv_gamma/beta weights as a proxy for modulation scale
+            for m in model.modules():
+                if isinstance(m, MaskSPADE):
+                    any_found = True
+                    scale = getattr(m, "scale_name", "")
+                    if scale not in ("P3", "P4", "P5"):
+                        # map by channels if possible
+                        ch_val = getattr(getattr(m, "cfg", None), "channels", None)
+                        try:
+                            ch_key = int(ch_val) if ch_val is not None else -1
+                        except Exception:
+                            ch_key = -1
+                        scale = {256: "P3", 512: "P4", 1024: "P5"}.get(ch_key, "P3")
+                    # Use weight stats in absence of per-batch activations
+                    gw = m.conv_gamma.weight.detach().float().view(-1)
+                    gb = m.conv_beta.weight.detach().float().view(-1)
+                    out[f"spade/{scale}/gamma_mean"] = float(gw.mean())
+                    out[f"spade/{scale}/gamma_std"] = float(gw.std(unbiased=False))
+                    out[f"spade/{scale}/beta_mean"] = float(gb.mean())
+                    out[f"spade/{scale}/beta_std"] = float(gb.std(unbiased=False))
+            return out if any_found else out
+        except Exception:
+            return out

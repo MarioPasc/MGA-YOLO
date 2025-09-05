@@ -2,9 +2,11 @@
 
 task: detection 
 mode: train 
-model: yolov8m
+model: yolov8s
 data: /home/mpascual/research/code/MGA-YOLO/tools/configs/ultra_data.yaml 
 epochs: 100
+project: "/home/mpascual/research/results/mga/Baseline" # (str, optional) project name
+name: "YOLOv8s" # (str, optional) experiment name, results saved to 'project/name' directory
 
 BASE_FM_SAVE: true
 BASE_FM_LAYERS: "15,18,21"
@@ -62,8 +64,6 @@ save_period: -1 # (int) Save checkpoint every x epochs (disabled if < 1)
 cache: False # (bool) True/ram, disk or False. Use cache for data loading
 device: 0 # (int | str | list) device: CUDA device=0 or [0,1,2,3] or "cpu/mps" or -1 or [-1,-1] to auto-select idle GPUs
 workers: 0 # (int) number of worker threads for data loading (per RANK if DDP)
-project: "/home/mpascual/research/results/mga/YOLOv8n_baseline" # (str, optional) project name
-name: "train_yolov8m_baseline" # (str, optional) experiment name, results saved to 'project/name' directory
 exist_ok: False # (bool) whether to overwrite existing experiment
 pretrained: True # (bool | str) whether to use a pretrained model (bool) or a model to load weights from (str)
 verbose: True # (bool) whether to print verbose output

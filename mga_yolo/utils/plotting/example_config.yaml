@@ -3,25 +3,34 @@
 # You can use either the 'series' mapping form below or a top-level mapping.
 series:
   baseline_yolo:
-    name: "YOLOv8n-Baseline"
+    name: "YOLOv8m"
     type: baseline
     input:
-      - /home/mpascual/research/results/mga/YOLOv8n_baseline/train_yolov8n_baseline/results.csv
+      - /home/mpascual/research/results/mga/Baseline/YOLOv8m/results.csv
     style:
       color: "#1f77b4"
       linestyle: "-"
       marker: "o"
       markersize: 2
 
-  mga_model_gated:
-    name: "MaskedECA - Gate"
+  masked_eca:
+    name: "MaskedECA-YOLOv8m"
     type: mga
     input:
-      - /home/mpascual/research/results/mga/MGA_YOLO/masked_eca_yolov8n_withgate/results.csv
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/MaskedECA_YOLOv8m/results.csv
     style:
       color: "#d62728"
       linestyle: "-"
       marker: "s"
       markersize: 2
 
-
+  masked_spade:
+    name: "MaskedSPADE-YOLOv8m"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/MaskedSPADE_YOLOv8m/results.csv
+    style:
+      color: "#ddaa33"
+      linestyle: "-"
+      marker: "s"
+      markersize: 2

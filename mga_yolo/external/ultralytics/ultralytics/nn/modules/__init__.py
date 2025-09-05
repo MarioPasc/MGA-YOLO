@@ -184,7 +184,7 @@ __all__ = (
 # Attempt to import custom MGA modules
 try:  # pragma: no cover
     from mga_yolo.nn.modules.segmentation import MGAMaskHead  # type: ignore
-    __all__ = (*__all__, "MGAMaskHead")  # extend exported symbols
+    __all__ = tuple(list(__all__) + ["MGAMaskHead"])  # type: ignore[assignment]
 except Exception as e:  # pragma: no cover
     # Silently ignore if custom module not present; building MGA YAML will fail visibly then.
     pass
@@ -192,6 +192,13 @@ except Exception as e:  # pragma: no cover
 # Attempt to import MaskECA attention
 try:  # pragma: no cover
     from mga_yolo.nn.modules.masked_eca import MaskECA  # type: ignore
-    __all__ = (*__all__, "MaskECA")
+    __all__ = tuple(list(__all__) + ["MaskECA"])  # type: ignore[assignment]
+except Exception:
+    pass
+
+# Attempt to import MaskSPADE normalization
+try:  # pragma: no cover
+    from mga_yolo.nn.modules.masked_spade import MaskSPADE  # type: ignore
+    __all__ = tuple(list(__all__) + ["MaskSPADE"])  # type: ignore[assignment]
 except Exception:
     pass

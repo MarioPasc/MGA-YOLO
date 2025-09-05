@@ -16,10 +16,11 @@
 
 task: mga 
 mode: train 
-model: configs/models/yolov8n_maskeca.yaml
+model: configs/models/yolov8m_spade.yaml
 data: configs/data/mga_data.yaml 
-epochs: 100 
-name: "masked_eca_yolov8n_withgate"
+epochs: 100
+name: "MaskedSPADE_YOLOv8m"
+project: "/home/mpascual/research/results/mga/MGA_YOLO" 
 
 # Mask-Related Hyperparameters
 MGA_MASK_METHOD: area
@@ -48,11 +49,11 @@ cls: 0.5 # (float) cls loss gain (scale with pixels)
 dfl: 1.5 # (float) dfl loss gain
 seg_bce_weight: 1.0 # (float) Weight of Binary Cross-Entropy loss on segmentation loss
 seg_dice_weight: 1.0 # (float) Weight of Dice loss on segmentation loss
+seg_loss_lambda: 1.0 # Loss lambda for segmentation loss when combined with detection loss
 
 ## Segmentation head-related hyperparameters ##
 seg_enable: True # Enable segmentation heads
 seg_scale_weights: [1.0, 1.0, 1.0] # Scale weights for segmentation loss
-seg_loss_lambda: 1.0 # Loss lambda for segmentation loss when combined with detection loss
 seg_smooth: 1.0 # Smoothing factor for segmentation
 
 ## Enabled augmentation hyperparameters ##
@@ -89,7 +90,6 @@ save_period: -1 # (int) Save checkpoint every x epochs (disabled if < 1)
 cache: False # (bool) True/ram, disk or False. Use cache for data loading
 device: 0 # (int | str | list) device: CUDA device=0 or [0,1,2,3] or "cpu/mps" or -1 or [-1,-1] to auto-select idle GPUs
 workers: 0 # (int) number of worker threads for data loading (per RANK if DDP)
-project: "/home/mpascual/research/results/mga/MGA_YOLO" # (str, optional) project name
 exist_ok: False # (bool) whether to overwrite existing experiment
 pretrained: True # (bool | str) whether to use a pretrained model (bool) or a model to load weights from (str)
 verbose: True # (bool) whether to print verbose output
