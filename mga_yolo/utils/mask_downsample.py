@@ -1,550 +1,247 @@
-# Algorithmic prototype for connectivity-preserving downsampling of a binary vessel mask.
-# It implements two options:
-#  1) "skeleton_bresenham": topology-preserving downsample by thinning to a skeleton,
-#     mapping to the coarse grid, and rasterizing connections via Bresenham lines.
-#  2) "gaussian_maxpool": antialiased soft downsample (Gaussian blur + block max/avg),
-#     which can be thresholded; good as a soft target but doesn't *guarantee* connectivity.
-#
-# The script will:
-#   - load the sample mask from /mnt/data/arcadetest_p1_v1_00001.png
-#   - run the downsampling for strides 8, 16, 32 with "skeleton_bresenham"
-#   - display results and report connected-component counts.
-#
-# Notes for integration:
-#   - The implementation is pure NumPy; skeletonization prefers scikit-image if present,
-#     and falls back to a Zhang–Suen thinning in NumPy if not available.
-#   - Bresenham rasterization guarantees that any edge in the fine skeleton graph is
-#     represented as an 8-connected path in the coarse grid.
-#
-
+# fast_mask_downsample.py
 from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple, Sequence, Dict
-
+from typing import Dict, List, Sequence, Tuple, Optional
+import os
 import numpy as np
 import cv2
-import concurrent.futures as futures
-from PIL import Image
-import matplotlib.pyplot as plt
 
-# Optional accelerated line rasterizer
+# Optional deps
+_HAS_SKIMAGE = False
+_HAS_SCIPY = False
 try:
-    from skimage.draw import line as _skimage_line  # type: ignore
-    _HAS_SKIMAGE_LINE = True
-except Exception:  # pragma: no cover
-    _HAS_SKIMAGE_LINE = False
-
-# Try to import optional libs; provide fallbacks if unavailable.
-try:
-    from skimage.morphology import skeletonize as skimage_skeletonize
+    from skimage.morphology import thin as _sk_thin, skeletonize as _sk_skeletonize
+    from skimage.measure import block_reduce as _block_reduce
     _HAS_SKIMAGE = True
 except Exception:
-    _HAS_SKIMAGE = False
+    _block_reduce = None  # type: ignore
 
-def _skeletonize_binary(bin_img: np.ndarray) -> np.ndarray:
+try:
+    from scipy.ndimage import maximum_filter as _maximum_filter  # noqa: F401
+    _HAS_SCIPY = True
+except Exception:
+    pass
+
+# ---------- backends ----------
+
+def _skeletonize_fast(bin_img: np.ndarray) -> np.ndarray:
     """
-    Topology-preserving thinning to obtain 1-pixel-wide skeleton.
+    Connectivity-preserving thinning to 1 px width.
 
-    Prefers scikit-image's implementation if available; otherwise, uses a NumPy
-    Zhang–Suen thinning fallback.
-
-    Parameters
-    ----------
-    bin_img : np.ndarray
-        Boolean or {0,1} array.
-
-    Returns
-    -------
-    np.ndarray
-        Boolean skeleton of the same shape.
+    Preference order:
+      1) OpenCV ximgproc.thinning (ZHANGSUEN or GUOHALL)
+      2) scikit-image thin/skeletonize
+      3) NumPy Zhang–Suen (rarely used)
     """
-    if bin_img.dtype != bool:
-        bin_img = bin_img > 0
-
+    img = (bin_img > 0).astype(np.uint8)
+    # 1) OpenCV ximgproc if available
+    if hasattr(cv2, "ximgproc") and hasattr(cv2.ximgproc, "thinning"):
+        ttype = cv2.ximgproc.THINNING_ZHANGSUEN  # or GUOHALL
+        sk = cv2.ximgproc.thinning(img, thinningType=ttype)
+        return sk.astype(bool)
+    # 2) scikit-image
     if _HAS_SKIMAGE:
-        return skimage_skeletonize(bin_img)
-
-    # ---------- Zhang–Suen thinning fallback ----------
-    img = bin_img.copy().astype(np.uint8)
+        # thin is slightly faster; skeletonize is more conservative
+        sk = _sk_thin(img.astype(bool))
+        return sk.astype(bool)
+    # 3) Fallback: compact vectorized Zhang–Suen
+    # Adapted for speed: operate on uint8 with convolution-like neighbor reads
+    I = img.copy()
     changed = True
-
-    def neighbors(y, x, arr):
-        # clockwise P2..P9 around (y,x)
-        return [
-            arr[y-1, x],     # P2
-            arr[y-1, x+1],   # P3
-            arr[y,   x+1],   # P4
-            arr[y+1, x+1],   # P5
-            arr[y+1, x],     # P6
-            arr[y+1, x-1],   # P7
-            arr[y,   x-1],   # P8
-            arr[y-1, x-1],   # P9
-        ]
-
-    def transitions(ns):
-        # number of 0->1 transitions in circular sequence
-        n = 0
-        for i in range(8):
-            n += (ns[i] == 0 and ns[(i+1) % 8] == 1)
-        return n
-
-    img_padded = np.pad(img, 1, mode="constant", constant_values=0)
+    pad = np.pad(I, 1, mode="constant")
     while changed:
         changed = False
-        for iter_idx in [0, 1]:
-            to_delete = []
-            for y in range(1, img_padded.shape[0]-1):
-                for x in range(1, img_padded.shape[1]-1):
-                    P1 = img_padded[y, x]
-                    if P1 == 0:
-                        continue
-                    ns = neighbors(y, x, img_padded)
-                    B = sum(ns)
-                    A = transitions(ns)
-                    if A != 1 or B < 2 or B > 6:
-                        continue
-                    if iter_idx == 0:
-                        if ns[0] * ns[2] * ns[4] != 0:
-                            continue
-                        if ns[2] * ns[4] * ns[6] != 0:
-                            continue
-                    else:
-                        if ns[0] * ns[2] * ns[6] != 0:
-                            continue
-                        if ns[0] * ns[4] * ns[6] != 0:
-                            continue
-                    to_delete.append((y, x))
-            if to_delete:
+        for k in (0, 1):
+            P2 = pad[:-2, 1:-1]; P3 = pad[:-2, 2:];  P4 = pad[1:-1, 2:];  P5 = pad[2:, 2:]
+            P6 = pad[2:, 1:-1];  P7 = pad[2:, 0:-2]; P8 = pad[1:-1, 0:-2]; P9 = pad[:-2, 0:-2]
+            B = (P2 + P3 + P4 + P5 + P6 + P7 + P8 + P9)
+            A = ((P2 == 0) & (P3 == 1)).astype(np.uint8)
+            A += ((P3 == 0) & (P4 == 1)); A += ((P4 == 0) & (P5 == 1)); A += ((P5 == 0) & (P6 == 1))
+            A += ((P6 == 0) & (P7 == 1)); A += ((P7 == 0) & (P8 == 1)); A += ((P8 == 0) & (P9 == 1))
+            A += ((P9 == 0) & (P2 == 1))
+            m = (pad[1:-1,1:-1] == 1) & (B >= 2) & (B <= 6) & (A == 1)
+            if k == 0:
+                m &= ~((P2 & P4 & P6) | (P4 & P6 & P8))
+            else:
+                m &= ~((P2 & P4 & P8) | (P2 & P6 & P8))
+            if m.any():
+                pad[1:-1,1:-1][m] = 0
                 changed = True
-                for (y, x) in to_delete:
-                    img_padded[y, x] = 0
-    return img_padded[1:-1, 1:-1].astype(bool)
+    return pad[1:-1,1:-1].astype(bool)
 
 
-def _bresenham_line(p0: Tuple[int, int], p1: Tuple[int, int]) -> List[Tuple[int, int]]:
+def _edges_from_skeleton(skel: np.ndarray) -> np.ndarray:
     """
-    Bresenham line between integer grid points inclusive.
-    Returns list of (y, x) coordinates.
+    Return N x 4 int array of (y0, x0, y1, x1) for undirected 8-neighbor edges.
+    Uses four directional shifts to avoid Python per-pixel loops.
     """
-    y0, x0 = p0
-    y1, x1 = p1
-    dy = abs(y1 - y0)
-    dx = abs(x1 - x0)
+    s = skel.astype(bool)
+    H, W = s.shape
+    edges: List[np.ndarray] = []
 
-    sy = 1 if y0 < y1 else -1
-    sx = 1 if x0 < x1 else -1
+    def _pairs(dy: int, dx: int) -> np.ndarray:
+        # crop to avoid wrap-around from roll
+        y0a, y0b = (0, H - dy) if dy >= 0 else (-dy, H)
+        x0a, x0b = (0, W - dx) if dx >= 0 else (-dx, W)
+        y1a, y1b = (dy, H) if dy >= 0 else (0, H + dy)
+        x1a, x1b = (dx, W) if dx >= 0 else (0, W + dx)
+        a = s[y0a:y0b, x0a:x0b]
+        b = s[y1a:y1b, x1a:x1b]
+        m = a & b
+        ys, xs = np.nonzero(m)
+        if ys.size == 0:
+            return np.empty((0, 4), np.int32)
+        y0 = ys + y0a; x0 = xs + x0a
+        y1 = ys + y1a; x1 = xs + x1a
+        return np.stack([y0, x0, y1, x1], axis=1).astype(np.int32)
 
-    y, x = y0, x0
-    points = [(y, x)]
-    if dx > dy:
-        err = dx // 2
-        while x != x1:
-            err -= dy
-            if err < 0:
-                y += sy
-                err += dx
-            x += sx
-            points.append((y, x))
-    else:
-        err = dy // 2
-        while y != y1:
-            err -= dx
-            if err < 0:
-                x += sx
-                err += dy
-            y += sy
-            points.append((y, x))
-    return points
+    # minimal set of undirected directions
+    for dy, dx in [(0, 1), (1, 0), (1, 1), (1, -1)]:
+        e = _pairs(dy, dx)
+        if e.size:
+            edges.append(e)
+    if not edges:
+        return np.empty((0, 4), np.int32)
+    E = np.vstack(edges)
+    return E  # (N,4)
 
 
 @dataclass
 class DownsampleConfig:
-    """
-    Configuration for connectivity-preserving downsampling.
-
-    Attributes
-    ----------
-    factor : int
-        Integer stride / downsampling factor (e.g., 8, 16, 32).
-    method : str
-        'skeleton_bresenham' or 'gaussian_maxpool'.
-    threshold : float
-        Threshold for soft masks in 'gaussian_maxpool' (0..1). Ignored otherwise.
-    close_diagonals : bool
-        If True, run a 3x3 binary closing to ensure 8-connectivity after rasterization.
-    """
     factor: int
-    method: str = "skeleton_bresenham"  # or: 'area', 'maxpool', 'pyrdown', 'gaussian_maxpool'
+    method: str = "skeleton_bresenham"
     threshold: float = 0.2
     close_diagonals: bool = True
 
 
 def downsample_preserve_connectivity(mask: np.ndarray, cfg: DownsampleConfig) -> np.ndarray:
     """
-    Downsample a binary mask by an integer factor, preserving connectivity.
-
-    For 'skeleton_bresenham', we:
-      1) skeletonize the mask
-      2) project skeleton pixels to coarse grid via floor division by factor
-      3) rasterize edges between 8-neighbor pairs in the fine skeleton using Bresenham
-      4) (optional) close 3x3 to ensure diagonal joins
-
-    For 'gaussian_maxpool', we:
-      1) apply Gaussian blur with sigma=factor/2 to antialias
-      2) block-max/avg-pool with kernel=stride=factor
-      3) threshold to binary
-
-    Parameters
-    ----------
-    mask : np.ndarray
-        Input binary mask (H, W), values in {0,1} or bool.
-    cfg : DownsampleConfig
-        Configuration instance.
-
-    Returns
-    -------
-    np.ndarray
-        Downsampled binary mask of shape (ceil(H/factor), ceil(W/factor)), dtype=uint8.
+    Connectivity-preserving downsample. Output shape = ceil(H/f) x ceil(W/f), uint8 {0,1}.
     """
-    assert cfg.factor >= 1 and int(cfg.factor) == cfg.factor, "factor must be a positive integer"
-    if mask.dtype != bool:
-        bin_mask = mask > 0
-    else:
-        bin_mask = mask
-
-    H, W = bin_mask.shape
+    assert cfg.factor >= 1 and int(cfg.factor) == cfg.factor
+    m = (mask > 0).astype(np.uint8)
+    H, W = m.shape
     Hc = (H + cfg.factor - 1) // cfg.factor
     Wc = (W + cfg.factor - 1) // cfg.factor
 
-    # Fast paths that still preserve thin structures reasonably well
+    # Fast paths
     if cfg.method == "area":
-        nh, nw = Hc, Wc
-        small = cv2.resize(bin_mask.astype(np.uint8), (nw, nh), interpolation=cv2.INTER_AREA)
+        small = cv2.resize(m, (Wc, Hc), interpolation=cv2.INTER_AREA)
         out = (small > cfg.threshold).astype(np.uint8)
         if cfg.close_diagonals:
-            kernel = np.ones((3, 3), np.uint8)
-            out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
+            out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8))
         return out
 
     if cfg.method == "maxpool":
+        # reshape fast path if divisible; else use block_reduce if present
         k = cfg.factor
-        pad_h = (k - (H % k)) % k
-        pad_w = (k - (W % k)) % k
-        if pad_h or pad_w:
-            mp = np.pad(bin_mask.astype(np.uint8), ((0, pad_h), (0, pad_w)), mode="constant")
-        else:
-            mp = bin_mask.astype(np.uint8)
+        pad_h = (k - (H % k)) % k; pad_w = (k - (W % k)) % k
+        mp = np.pad(m, ((0, pad_h), (0, pad_w))) if (pad_h or pad_w) else m
         H2, W2 = mp.shape
         view = mp.reshape(H2 // k, k, W2 // k, k)
         out = view.max(axis=(1, 3)).astype(np.uint8)
         if cfg.close_diagonals:
-            kernel = np.ones((3, 3), np.uint8)
-            out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
+            out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8))
         return out
 
-    if cfg.method == "pyrdown":
-        s = cfg.factor
-        out = bin_mask.astype(np.uint8)
-        if s & (s - 1) == 0 and s > 1:
-            while s > 1:
-                out = cv2.pyrDown(out)
-                s //= 2
-            out = (out > 0).astype(np.uint8)
-            if cfg.close_diagonals:
-                kernel = np.ones((3, 3), np.uint8)
-                out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
-            return out
-
-    if cfg.method == "skeleton_bresenham":
-        # Skeletonize (dominant cost). Using skimage when available (C/numexpr) else fallback.
-        skel = _skeletonize_binary(bin_mask)
-        out = np.zeros((Hc, Wc), dtype=np.uint8)
-
-        # Direction subset (4 of 8) to avoid duplicate undirected edges:
-        # E, SE, S, SW  -> guarantees every adjacency considered once.
-        dirs = [(0, 1), (1, 1), (1, 0), (1, -1)]
-        skel_idx = np.argwhere(skel)  # (N,2)
-
-        if skel_idx.size == 0:
-            return out  # empty mask quick exit
-
-        # Pre-mark coarse cells that contain any skeleton pixel (isolated points)
-        coarse_nodes = skel_idx // cfg.factor
-        out[coarse_nodes[:, 0], coarse_nodes[:, 1]] = 1
-
-        Hm1, Wm1 = H - 1, W - 1
-        for y, x in skel_idx:
-            for dy, dx in dirs:
-                yy = y + dy
-                xx = x + dx
-                if yy < 0 or yy > Hm1 or xx < 0 or xx > Wm1:
-                    continue
-                if not skel[yy, xx]:
-                    continue
-                pc_y, pc_x = y // cfg.factor, x // cfg.factor
-                qc_y, qc_x = yy // cfg.factor, xx // cfg.factor
-                # If both endpoints fall in same coarse cell, it's already marked
-                if pc_y == qc_y and pc_x == qc_x:
-                    continue
-                if _HAS_SKIMAGE_LINE:
-                    ry, rx = _skimage_line(pc_y, pc_x, qc_y, qc_x)
-                    valid = (ry >= 0) & (ry < Hc) & (rx >= 0) & (rx < Wc)
-                    out[ry[valid], rx[valid]] = 1
-                else:  # fallback pure Python Bresenham
-                    for yy2, xx2 in _bresenham_line((pc_y, pc_x), (qc_y, qc_x)):
-                        if 0 <= yy2 < Hc and 0 <= xx2 < Wc:
-                            out[yy2, xx2] = 1
-
-        if cfg.close_diagonals:
-            kernel = np.ones((3, 3), np.uint8)
-            out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
-        return out.astype(np.uint8)
-
-    elif cfg.method == "gaussian_maxpool":
-        try:
-            from scipy.ndimage import gaussian_filter
-            blurred = gaussian_filter(bin_mask.astype(np.float32), sigma=cfg.factor / 2.0, mode="reflect")
-        except Exception:
-            # crude box blur if scipy is not available
+    if cfg.method == "gaussian_maxpool":
+        # antialias in C++ then block max in C/NumPy
+        sigma = float(cfg.factor) / 2.0
+        blurred = cv2.GaussianBlur(m.astype(np.float32), ksize=(0, 0),
+                                   sigmaX=sigma, sigmaY=sigma, borderType=cv2.BORDER_REFLECT)
+        if _block_reduce is not None:
+            pooled = _block_reduce(blurred, block_size=(cfg.factor, cfg.factor), func=np.max)
+        else:
+            # fallback: resize with INTER_AREA approximates average; we want max → approximate by dilation
             k = cfg.factor
-            pad = k // 2
-            padded = np.pad(bin_mask.astype(np.float32), pad, mode="reflect")
-            kernel = np.ones((k, k), dtype=np.float32) / (k * k)
-            # naive convolution
-            H2, W2 = bin_mask.shape
-            blurred = np.zeros_like(bin_mask, dtype=np.float32)
-            for i in range(H2):
-                for j in range(W2):
-                    patch = padded[i:i+k, j:j+k]
-                    blurred[i, j] = float(np.sum(patch * kernel))
+            pooled = cv2.dilate(blurred, np.ones((k, k), np.float32))[::k, ::k]
+        return (pooled >= cfg.threshold).astype(np.uint8)
 
-        # block max/avg pool with kernel=stride=factor
-        out = np.zeros((Hc, Wc), dtype=np.float32)
-        for i in range(Hc):
-            for j in range(Wc):
-                y0, x0 = i * cfg.factor, j * cfg.factor
-                y1, x1 = min(y0 + cfg.factor, H), min(x0 + cfg.factor, W)
-                out[i, j] = np.max(blurred[y0:y1, x0:x1])  # max-pool; could be avg
-        return (out >= cfg.threshold).astype(np.uint8)
+    # skeleton_bresenham
+    strict = os.getenv("MGA_SKELETON_STRICT", "0").lower() in {"1", "true", "yes"}
+    if not strict:
+        # Occupancy + optional 3x3 close
+        return downsample_preserve_connectivity(m, DownsampleConfig(cfg.factor, "maxpool",
+                                                                    cfg.threshold, cfg.close_diagonals))
 
-    else:
-        raise ValueError(f"Unknown method: {cfg.method}")
+    # Strict path
+    sk = _skeletonize_fast(m)
+    if not sk.any():
+        return np.zeros((Hc, Wc), np.uint8)
+
+    # Map skeleton pixels to coarse grid
+    yc, xc = np.nonzero(sk)
+    pc = np.stack([yc // cfg.factor, xc // cfg.factor], axis=1)
+    out = np.zeros((Hc, Wc), np.uint8)
+    out[pc[:, 0], pc[:, 1]] = 1
+
+    # Build edges and rasterize them on coarse grid using cv2.line (Bresenham inside)
+    edges = _edges_from_skeleton(sk)
+    if edges.size:
+        for y0, x0, y1, x1 in edges:
+            p0 = (int(x0 // cfg.factor), int(y0 // cfg.factor))
+            p1 = (int(x1 // cfg.factor), int(y1 // cfg.factor))
+            if p0 == p1:
+                continue
+            cv2.line(out, p0, p1, 1, 1)
+
+    if cfg.close_diagonals:
+        out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8))
+    return out.astype(np.uint8)
 
 
-def downsample_batch(
-    masks: Sequence[np.ndarray],
-    factor: int,
-    method: str = "area",
-    threshold: float = 0.0,
-    close_diagonals: bool = True,
-    max_workers: int = 0,
-) -> List[np.ndarray]:
-    """Downsample a batch of binary masks in parallel.
-
-    Args:
-        masks: Sequence of HxW binary arrays.
-        factor: Integer downsample factor.
-        method: One of 'area', 'maxpool', 'pyrdown', 'skeleton_bresenham', 'gaussian_maxpool'.
-        threshold: Threshold used by some methods.
-        close_diagonals: Apply small 3x3 closing to keep 8-connectivity.
-        max_workers: If > 0, use ThreadPool with this number of workers.
-
-    Returns:
-        List of downsampled binary masks.
+def downsample_preserve_connectivity_multi(mask: np.ndarray,
+                                           factors: Sequence[int],
+                                           method: str = "skeleton_bresenham",
+                                           threshold: float = 0.2,
+                                           close_diagonals: bool = True) -> Dict[int, np.ndarray]:
     """
-    cfg = DownsampleConfig(factor=factor, method=method, threshold=threshold, close_diagonals=close_diagonals)
-
-    def _run(m):
-        return downsample_preserve_connectivity(m, cfg)
-
-    if max_workers and max_workers > 0:
-        with futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-            return list(ex.map(_run, masks))
-    else:
-        return [ _run(m) for m in masks ]
-
-
-def downsample_preserve_connectivity_multi(
-    mask: np.ndarray,
-    factors: Sequence[int],
-    method: str = "skeleton_bresenham",
-    threshold: float = 0.2,
-    close_diagonals: bool = True,
-) -> Dict[int, np.ndarray]:
-    """Multi-factor variant: skeletonize once then rasterize for each factor.
-
-    Parameters
-    ----------
-    mask : np.ndarray
-        Input binary mask.
-    factors : Sequence[int]
-        Iterable of integer strides.
-    method : str
-        Currently only 'skeleton_bresenham' supported (others fall back per-factor call).
-    threshold : float
-        Threshold for future soft methods (kept for API symmetry).
-    close_diagonals : bool
-        Apply 3x3 closing after rasterization.
-
-    Returns
-    -------
-    Dict[int, np.ndarray]
-        Mapping factor -> downsampled binary mask.
+    Multi-factor variant with single skeletonization when strict skeleton is requested.
     """
     if method != "skeleton_bresenham":
-        # Fallback: independent calls (still ensure correctness)
-        out = {}
-        for f in factors:
-            out[f] = downsample_preserve_connectivity(
-                mask,
-                DownsampleConfig(
-                    factor=f,
-                    method=method,
-                    threshold=threshold,
-                    close_diagonals=close_diagonals,
-                ),
-            )
-        return out
+        return {f: downsample_preserve_connectivity(mask, DownsampleConfig(f, method, threshold, close_diagonals))
+                for f in factors}
 
-    if mask.dtype != bool:
-        bin_mask = mask > 0
-    else:
-        bin_mask = mask
+    strict = os.getenv("MGA_SKELETON_STRICT", "0").lower() in {"1", "true", "yes"}
+    if not strict:
+        return {f: downsample_preserve_connectivity(mask, DownsampleConfig(f, "maxpool", threshold, close_diagonals))
+                for f in factors}
 
-    skel = _skeletonize_binary(bin_mask)
-    skel_idx = np.argwhere(skel)
-    if skel_idx.size == 0:
-        return {f: np.zeros(((mask.shape[0] + f - 1)//f, (mask.shape[1] + f - 1)//f), dtype=np.uint8) for f in factors}
+    m = (mask > 0).astype(np.uint8)
+    H, W = m.shape
+    sk = _skeletonize_fast(m)
+    if not sk.any():
+        return {f: np.zeros(((H + f - 1)//f, (W + f - 1)//f), np.uint8) for f in factors}
 
-    # Precompute adjacency list once (undirected edges via directional subset)
-    dirs = [(0, 1), (1, 1), (1, 0), (1, -1)]
-    H, W = bin_mask.shape
-    Hm1, Wm1 = H - 1, W - 1
-    edges: List[Tuple[Tuple[int, int], Tuple[int, int]]] = []
-    for y, x in skel_idx:
-        for dy, dx in dirs:
-            yy = y + dy
-            xx = x + dx
-            if yy < 0 or yy > Hm1 or xx < 0 or xx > Wm1:
-                continue
-            if skel[yy, xx]:
-                edges.append(((y, x), (yy, xx)))
+    edges = _edges_from_skeleton(sk)
+    ys, xs = np.nonzero(sk)
+    results: Dict[int, np.uint8] = {}
 
-    results: Dict[int, np.ndarray] = {}
-    kernel = np.ones((3, 3), np.uint8) if close_diagonals else None
     for f in factors:
-        Hc = (H + f - 1) // f
-        Wc = (W + f - 1) // f
-        out = np.zeros((Hc, Wc), dtype=np.uint8)
-        coarse_nodes = skel_idx // f
-        out[coarse_nodes[:, 0], coarse_nodes[:, 1]] = 1
-        for (y0, x0), (y1, x1) in edges:
-            pc_y, pc_x = y0 // f, x0 // f
-            qc_y, qc_x = y1 // f, x1 // f
-            if pc_y == qc_y and pc_x == qc_x:
-                continue
-            if _HAS_SKIMAGE_LINE:
-                ry, rx = _skimage_line(pc_y, pc_x, qc_y, qc_x)
-                valid = (ry >= 0) & (ry < Hc) & (rx >= 0) & (rx < Wc)
-                out[ry[valid], rx[valid]] = 1
-            else:
-                for yy2, xx2 in _bresenham_line((pc_y, pc_x), (qc_y, qc_x)):
-                    if 0 <= yy2 < Hc and 0 <= xx2 < Wc:
-                        out[yy2, xx2] = 1
+        Hc = (H + f - 1) // f; Wc = (W + f - 1) // f
+        out = np.zeros((Hc, Wc), np.uint8)
+        # nodes
+        out[(ys // f), (xs // f)] = 1
+        # edges
+        if edges.size:
+            for y0, x0, y1, x1 in edges:
+                p0 = (int(x0 // f), int(y0 // f))
+                p1 = (int(x1 // f), int(y1 // f))
+                if p0 == p1:
+                    continue
+                cv2.line(out, p0, p1, 1, 1)
         if close_diagonals:
-            out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
-        results[f] = out.astype(np.uint8)
+            out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8))
+        results[f] = out
     return results
 
 
 def connected_components_count(bin_img: np.ndarray, connectivity: int = 2) -> int:
-    """
-    Count connected components in a binary image.
-
-    Parameters
-    ----------
-    bin_img : np.ndarray
-        Binary image with values {0,1}.
-    connectivity : int
-        1 for 4-connectivity, 2 for 8-connectivity (default).
-
-    Returns
-    -------
-    int
-        Number of connected components (excluding background).
-    """
-    try:
-        from skimage.measure import label
-        lab = label(bin_img, connectivity=connectivity)
-        return lab.max()
-    except Exception:
-        # simple BFS fallback
-        bin_img = (bin_img > 0).astype(np.uint8)
-        H, W = bin_img.shape
-        visited = np.zeros_like(bin_img, dtype=bool)
-        comps = 0
-        nbrs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-        if connectivity == 2:
-            nbrs += [(-1, -1), (-1, 1), (1, -1), (1, 1)]
-        for i in range(H):
-            for j in range(W):
-                if bin_img[i, j] == 0 or visited[i, j]:
-                    continue
-                comps += 1
-                # BFS
-                stack = [(i, j)]
-                visited[i, j] = True
-                while stack:
-                    y, x = stack.pop()
-                    for dy, dx in nbrs:
-                        yy, xx = y + dy, x + dx
-                        if 0 <= yy < H and 0 <= xx < W and bin_img[yy, xx] and not visited[yy, xx]:
-                            visited[yy, xx] = True
-                            stack.append((yy, xx))
-        return comps
-
-
-def main():
-    # --------- Demo on the provided image ---------
-    img_path = "/mnt/data/arcadetest_p1_v1_00001.png"
-    img = Image.open(img_path).convert("L")
-    mask = (np.array(img) > 0).astype(np.uint8)
-
-    factors = [8, 16, 32]
-    results = {}
-
-    for f in factors:
-        cfg = DownsampleConfig(factor=f, method="skeleton_bresenham", threshold=0.2, close_diagonals=True)
-        ds = downsample_preserve_connectivity(mask, cfg)
-        results[f] = ds
-        # Save for download
-        Image.fromarray((ds * 255).astype(np.uint8)).save(f"/mnt/data/mask_down_f{f}.png")
-
-    # Show the original and the downsampled masks
-    plt.figure(figsize=(10, 10))
-    plt.subplot(2, 2, 1)
-    plt.title("Original (512x512)")
-    plt.imshow(mask, cmap="gray")
-    plt.axis("off")
-
-    for idx, f in enumerate(factors, start=2):
-        plt.subplot(2, 2, idx)
-        ds = results[f]
-        plt.title(f"Downsample factor {f} -> {ds.shape[1]}x{ds.shape[0]}")
-        # Upscale for visualization so it's visible
-        viz = Image.fromarray((ds * 255).astype(np.uint8)).resize((512, 512), resample=Image.NEAREST)
-        plt.imshow(viz, cmap="gray")
-        plt.axis("off")
-
-    plt.tight_layout()
-    plt.show()
-
-    # Report component counts
-    for f in factors:
-        comps = connected_components_count(results[f], connectivity=2)
-        print(f"factor={f}: components(8-connected) = {comps}")
-
-    print("\nSaved outputs:")
-    for f in factors:
-        print(f" - [f={f}] mask_down_f{f}.png -> sandbox:/mnt/data/mask_down_f{f}.png")
+    """Count connected components excluding background, using OpenCV if present."""
+    img = (bin_img > 0).astype(np.uint8)
+    if connectivity == 2:
+        conn = cv2.CV_8U
+        n, _ = cv2.connectedComponents(img, connectivity=8, ltype=conn)
+    else:
+        n, _ = cv2.connectedComponents(img, connectivity=4)
+    return int(n - 1)

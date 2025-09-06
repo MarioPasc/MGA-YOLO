@@ -8,7 +8,7 @@ series:
     input:
       - /home/mpascual/research/results/mga/Baseline/YOLOv8s/results.csv
     style:
-      color: "#1f77b4"
+      color: "#cc3311"
       linestyle: "-"
       marker: "o"
       markersize: 2
@@ -19,7 +19,7 @@ series:
     input:
       - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_noUFL_MaskedSPADE_YOLOv8s/results.csv
     style:
-      color: "#d62728"
+      color: "#0077bb"
       linestyle: "-"
       marker: "s"
       markersize: 2
@@ -28,20 +28,20 @@ series:
     name: "MAXPOOL"
     type: mga
     input:
-      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_noUFL_Maxpool_MaskedSPADE_YOLOv8s/results.csv
+      - /home/mpascual/research/results/mga/MGA_YOLO/trials/mask/Kendall_noUFL_Maxpool_MaskedSPADE_YOLOv8s/results.csv
     style:
-      color: "#ddaa33"
+      color: "#009988"
       linestyle: "-"
       marker: "s"
       markersize: 2
 
   masked_spade_nearest:
-    name: "NEAREST"
+    name: "cv.INTER_NEAREST"
     type: mga
     input:
-      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_noUFL_Nearest_MaskedSPADE_YOLOv8s/results.csv
+      - /home/mpascual/research/results/mga/MGA_YOLO/trials/mask/Kendall_noUFL_Nearest_MaskedSPADE_YOLOv8s/results.csv
     style:
-      color: "#ddaa33"
+      color: "#ee7733"
       linestyle: "-"
       marker: "s"
       markersize: 2

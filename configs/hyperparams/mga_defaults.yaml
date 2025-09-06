@@ -19,16 +19,17 @@ mode: train
 model: configs/models/yolov8s_spade.yaml
 data: configs/data/mga_data.yaml 
 epochs: 100
-name: "Kendall_noUFL_Nearest_MaskedSPADE_YOLOv8s"
+name: "Kendall_noUFL_PyrDown_MaskedSPADE_YOLOv8s"
 project: "/home/mpascual/research/results/mga/MGA_YOLO" 
 
 # Mask-Related Hyperparameters
-MGA_MASK_METHOD: nearest
+MGA_MASK_METHOD: pyrdown
 MGA_MASK_BRIDGE: 0
 MGA_MASK_THRESH: 0.0
 MGA_SAVE_FM: True
 MGA_SAVE_LAYERS: "15,18,21" # These are the pre-attention feature maps
 MGA_SAVE_FM_MAX: 4 # This means that we are going to save FM and Preds 4 times during training, that is, when the network is 25%, 50%, 75%, and 100% trained
+MGA_SKELETON_STRICT: 0 # 0: relaxed (faster), 1: strict (slower)
 
 # Hyperparameters ------------------------------------------------------------------------------------------------------
 
