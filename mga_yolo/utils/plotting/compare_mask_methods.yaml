@@ -13,22 +13,33 @@ series:
       marker: "o"
       markersize: 2
 
-  masked_eca:
-    name: "MaskedECA-YOLOv8s-Kendall-noUFL"
+  masked_spade_area:
+    name: "cv.INTER_AREA"
     type: mga
     input:
-      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_noUFL_MaskedECA_YOLOv8s/results.csv
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_noUFL_MaskedSPADE_YOLOv8s/results.csv
     style:
       color: "#d62728"
       linestyle: "-"
       marker: "s"
       markersize: 2
 
-  masked_spade:
-    name: "MaskedSPADE-YOLOv8s-Kendall-noUFL"
+  masked_spade_maxpool:
+    name: "MAXPOOL"
     type: mga
     input:
-      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_noUFL_MaskedSPADE_YOLOv8s/results.csv
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_noUFL_Maxpool_MaskedSPADE_YOLOv8s/results.csv
+    style:
+      color: "#ddaa33"
+      linestyle: "-"
+      marker: "s"
+      markersize: 2
+
+  masked_spade_nearest:
+    name: "NEAREST"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/Kendall_noUFL_Nearest_MaskedSPADE_YOLOv8s/results.csv
     style:
       color: "#ddaa33"
       linestyle: "-"

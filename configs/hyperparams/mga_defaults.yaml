@@ -16,14 +16,14 @@
 
 task: mga 
 mode: train 
-model: configs/models/yolov8s_eca.yaml
+model: configs/models/yolov8s_spade.yaml
 data: configs/data/mga_data.yaml 
 epochs: 100
-name: "Kendall_UFL_MaskedECA_YOLOv8s"
+name: "Kendall_noUFL_Nearest_MaskedSPADE_YOLOv8s"
 project: "/home/mpascual/research/results/mga/MGA_YOLO" 
 
 # Mask-Related Hyperparameters
-MGA_MASK_METHOD: area
+MGA_MASK_METHOD: nearest
 MGA_MASK_BRIDGE: 0
 MGA_MASK_THRESH: 0.0
 MGA_SAVE_FM: True
@@ -56,7 +56,7 @@ enabled: True # Enable segmentation heads
 scale_weights: [1.0, 1.0, 1.0] # Scale weights for segmentation loss
 smooth: 1.0 # Smoothing factor for segmentation
 # Unified Focal Loss toggles
-use_unified_focal: True
+use_unified_focal: False
 ufl_lambda: 0.5   # λ in LsUF
 ufl_delta: 0.6    # δ balance
 ufl_gamma: 0.5    # γ focus

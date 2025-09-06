@@ -20,13 +20,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple, Sequence
+from typing import Iterable, List, Optional, Tuple, Sequence, Dict
 
 import numpy as np
 import cv2
 import concurrent.futures as futures
 from PIL import Image
 import matplotlib.pyplot as plt
+
+# Optional accelerated line rasterizer
+try:
+    from skimage.draw import line as _skimage_line  # type: ignore
+    _HAS_SKIMAGE_LINE = True
+except Exception:  # pragma: no cover
+    _HAS_SKIMAGE_LINE = False
 
 # Try to import optional libs; provide fallbacks if unavailable.
 try:
@@ -250,55 +257,48 @@ def downsample_preserve_connectivity(mask: np.ndarray, cfg: DownsampleConfig) ->
             return out
 
     if cfg.method == "skeleton_bresenham":
+        # Skeletonize (dominant cost). Using skimage when available (C/numexpr) else fallback.
         skel = _skeletonize_binary(bin_mask)
         out = np.zeros((Hc, Wc), dtype=np.uint8)
-        # Offsets for 8-neighborhood
-        ns = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]
-        skel_idx = np.argwhere(skel)
-        skel_set = set(map(tuple, skel_idx.tolist()))
-        # Map skeleton points to coarse grid
-        def to_coarse(p):
-            y, x = p
-            return (y // cfg.factor, x // cfg.factor)
 
-        visited_edges = set()
+        # Direction subset (4 of 8) to avoid duplicate undirected edges:
+        # E, SE, S, SW  -> guarantees every adjacency considered once.
+        dirs = [(0, 1), (1, 1), (1, 0), (1, -1)]
+        skel_idx = np.argwhere(skel)  # (N,2)
+
+        if skel_idx.size == 0:
+            return out  # empty mask quick exit
+
+        # Pre-mark coarse cells that contain any skeleton pixel (isolated points)
+        coarse_nodes = skel_idx // cfg.factor
+        out[coarse_nodes[:, 0], coarse_nodes[:, 1]] = 1
+
+        Hm1, Wm1 = H - 1, W - 1
         for y, x in skel_idx:
-            p = (y, x)
-            for dy, dx in ns:
-                q = (y + dy, x + dx)
-                if q not in skel_set:
+            for dy, dx in dirs:
+                yy = y + dy
+                xx = x + dx
+                if yy < 0 or yy > Hm1 or xx < 0 or xx > Wm1:
                     continue
-                # undirected edge; avoid double-drawing
-                e = tuple(sorted([p, q]))
-                if e in visited_edges:
+                if not skel[yy, xx]:
                     continue
-                visited_edges.add(e)
-
-                pc = to_coarse(p)
-                qc = to_coarse(q)
-                # draw Bresenham line in coarse grid
-                for yy, xx in _bresenham_line(pc, qc):
-                    if 0 <= yy < Hc and 0 <= xx < Wc:
-                        out[yy, xx] = 1
+                pc_y, pc_x = y // cfg.factor, x // cfg.factor
+                qc_y, qc_x = yy // cfg.factor, xx // cfg.factor
+                # If both endpoints fall in same coarse cell, it's already marked
+                if pc_y == qc_y and pc_x == qc_x:
+                    continue
+                if _HAS_SKIMAGE_LINE:
+                    ry, rx = _skimage_line(pc_y, pc_x, qc_y, qc_x)
+                    valid = (ry >= 0) & (ry < Hc) & (rx >= 0) & (rx < Wc)
+                    out[ry[valid], rx[valid]] = 1
+                else:  # fallback pure Python Bresenham
+                    for yy2, xx2 in _bresenham_line((pc_y, pc_x), (qc_y, qc_x)):
+                        if 0 <= yy2 < Hc and 0 <= xx2 < Wc:
+                            out[yy2, xx2] = 1
 
         if cfg.close_diagonals:
-            # 3x3 binary closing (dilation then erosion) to fix diagonal "holes"
-            # Implemented via convolution-like neighborhood check
-            padded = np.pad(out, 1, mode="constant", constant_values=0)
-            # dilate
-            dil = np.zeros_like(padded)
-            for i in range(1, padded.shape[0] - 1):
-                for j in range(1, padded.shape[1] - 1):
-                    if np.any(padded[i-1:i+2, j-1:j+2] > 0):
-                        dil[i, j] = 1
-            # erode
-            ero = np.zeros_like(dil)
-            for i in range(1, dil.shape[0] - 1):
-                for j in range(1, dil.shape[1] - 1):
-                    if np.all(dil[i-1:i+2, j-1:j+2] > 0):
-                        ero[i, j] = 1
-            out = ero[1:-1, 1:-1].astype(np.uint8)
-
+            kernel = np.ones((3, 3), np.uint8)
+            out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
         return out.astype(np.uint8)
 
     elif cfg.method == "gaussian_maxpool":
@@ -363,6 +363,99 @@ def downsample_batch(
             return list(ex.map(_run, masks))
     else:
         return [ _run(m) for m in masks ]
+
+
+def downsample_preserve_connectivity_multi(
+    mask: np.ndarray,
+    factors: Sequence[int],
+    method: str = "skeleton_bresenham",
+    threshold: float = 0.2,
+    close_diagonals: bool = True,
+) -> Dict[int, np.ndarray]:
+    """Multi-factor variant: skeletonize once then rasterize for each factor.
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        Input binary mask.
+    factors : Sequence[int]
+        Iterable of integer strides.
+    method : str
+        Currently only 'skeleton_bresenham' supported (others fall back per-factor call).
+    threshold : float
+        Threshold for future soft methods (kept for API symmetry).
+    close_diagonals : bool
+        Apply 3x3 closing after rasterization.
+
+    Returns
+    -------
+    Dict[int, np.ndarray]
+        Mapping factor -> downsampled binary mask.
+    """
+    if method != "skeleton_bresenham":
+        # Fallback: independent calls (still ensure correctness)
+        out = {}
+        for f in factors:
+            out[f] = downsample_preserve_connectivity(
+                mask,
+                DownsampleConfig(
+                    factor=f,
+                    method=method,
+                    threshold=threshold,
+                    close_diagonals=close_diagonals,
+                ),
+            )
+        return out
+
+    if mask.dtype != bool:
+        bin_mask = mask > 0
+    else:
+        bin_mask = mask
+
+    skel = _skeletonize_binary(bin_mask)
+    skel_idx = np.argwhere(skel)
+    if skel_idx.size == 0:
+        return {f: np.zeros(((mask.shape[0] + f - 1)//f, (mask.shape[1] + f - 1)//f), dtype=np.uint8) for f in factors}
+
+    # Precompute adjacency list once (undirected edges via directional subset)
+    dirs = [(0, 1), (1, 1), (1, 0), (1, -1)]
+    H, W = bin_mask.shape
+    Hm1, Wm1 = H - 1, W - 1
+    edges: List[Tuple[Tuple[int, int], Tuple[int, int]]] = []
+    for y, x in skel_idx:
+        for dy, dx in dirs:
+            yy = y + dy
+            xx = x + dx
+            if yy < 0 or yy > Hm1 or xx < 0 or xx > Wm1:
+                continue
+            if skel[yy, xx]:
+                edges.append(((y, x), (yy, xx)))
+
+    results: Dict[int, np.ndarray] = {}
+    kernel = np.ones((3, 3), np.uint8) if close_diagonals else None
+    for f in factors:
+        Hc = (H + f - 1) // f
+        Wc = (W + f - 1) // f
+        out = np.zeros((Hc, Wc), dtype=np.uint8)
+        coarse_nodes = skel_idx // f
+        out[coarse_nodes[:, 0], coarse_nodes[:, 1]] = 1
+        for (y0, x0), (y1, x1) in edges:
+            pc_y, pc_x = y0 // f, x0 // f
+            qc_y, qc_x = y1 // f, x1 // f
+            if pc_y == qc_y and pc_x == qc_x:
+                continue
+            if _HAS_SKIMAGE_LINE:
+                ry, rx = _skimage_line(pc_y, pc_x, qc_y, qc_x)
+                valid = (ry >= 0) & (ry < Hc) & (rx >= 0) & (rx < Wc)
+                out[ry[valid], rx[valid]] = 1
+            else:
+                for yy2, xx2 in _bresenham_line((pc_y, pc_x), (qc_y, qc_x)):
+                    if 0 <= yy2 < Hc and 0 <= xx2 < Wc:
+                        out[yy2, xx2] = 1
+        if close_diagonals:
+            out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
+        results[f] = out.astype(np.uint8)
+    return results
 
 
 def connected_components_count(bin_img: np.ndarray, connectivity: int = 2) -> int:
