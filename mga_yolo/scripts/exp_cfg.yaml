@@ -1,3 +1,5 @@
+
+experiment_name: Model_Comparison
 # We match each model to its hyperparameter under the "models" config, using this path
 # as root
 cfg_root: mga_yolo/config/models

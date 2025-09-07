@@ -122,26 +122,30 @@ def build_experiments(cfg_path: Path) -> list[Experiment]:
     return experiments
 
 
-def prepare_config(exp: Experiment, output_root: Path) -> dict[str, Any]:
-    hyp = load_yaml(exp.hyp_cfg)
-    # Base project directory
-    project = hyp.get("project") or str(output_root)
-    project_path = Path(project)
-    name = hyp.get("name") or "exp"
-    # Compose unique name
-    composed_name = f"{name}_{exp.tag()}"
-    # Update hyp
-    hyp.update(
-        {
-            "model": str(exp.model_cfg),
-            "model_scale": exp.scale,
-            "data": str(exp.fold_yaml),
-            "name": composed_name,
-            "project": str(project_path),
-        }
-    )
-    # Device filled later.
-    return hyp
+def prepare_config(exp: Experiment, output_root: Path, experiment_name: str) -> dict[str, Any]:
+        """Merge base hyperparameters with dynamic fields for this experiment.
+
+        Output directory layout required:
+            {output_root}/{experiment_name}/{model}_{scale}_fold{fold}/
+
+        YOLO uses project/name => project/name/* for run artifacts, so we set:
+            project = {output_root}/{experiment_name}
+            name    = {model}_{scale}_fold{fold}
+        """
+        hyp = load_yaml(exp.hyp_cfg)
+        project_root = Path(output_root) / experiment_name
+        project_root.mkdir(parents=True, exist_ok=True)
+        run_name = f"{exp.model_name}_{exp.scale}_fold{exp.fold_index}"
+        hyp.update(
+                {
+                        "model": str(exp.model_cfg),
+                        "model_scale": exp.scale,
+                        "data": str(exp.fold_yaml),
+                        "name": run_name,
+                        "project": str(project_root),
+                }
+        )
+        return hyp
 
 
 def launch_subprocess(exp: Experiment, cfg: dict[str, Any], device: str, python: str) -> subprocess.Popen:
@@ -207,9 +211,10 @@ def run(
     if not exp_list:
         typer.echo("No experiments found.")
         raise typer.Exit(0)
-    cfg_root = load_yaml(config)
-    output_root = Path(cfg_root.get("output_root", "results")).expanduser().resolve()
-    gpus = cfg_root.get("gpu") or ["cuda:0"]
+    exp_cfg = load_yaml(config)
+    output_root = Path(exp_cfg.get("output_root", "results")).expanduser().resolve()
+    experiment_name = exp_cfg.get("experiment_name", "experiment")
+    gpus = exp_cfg.get("gpu") or ["cuda:0"]
     gpu_states = [GPUState(device=g, max_slots=gpu_slots) for g in gpus]
     pending: queue.Queue[Experiment] = queue.Queue()
     for e in exp_list:
@@ -221,7 +226,7 @@ def run(
         raise typer.Exit(0)
 
     live_threads: list[threading.Thread] = []
-    job_cfgs: dict[int, dict[str, Any]] = {e.idx: prepare_config(e, output_root) for e in exp_list}
+    job_cfgs: dict[int, dict[str, Any]] = {e.idx: prepare_config(e, output_root, experiment_name) for e in exp_list}
     job_processes: dict[int, tuple[Experiment, subprocess.Popen, GPUState]] = {}
 
     def schedule_loop():
