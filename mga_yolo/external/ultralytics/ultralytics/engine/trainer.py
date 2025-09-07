@@ -16,6 +16,8 @@ from copy import copy, deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import numpy as np
 import torch
 from torch import distributed as dist
@@ -53,6 +55,8 @@ from ultralytics.utils.torch_utils import (
     strip_optimizer,
     torch_distributed_zero_first,
     unset_deterministic,
+    # Profile the network parameters into args.yaml
+    get_num_params, get_num_gradients, get_flops
 )
 
 
@@ -247,6 +251,64 @@ class BaseTrainer:
             world_size=world_size,
         )
 
+    def _collect_model_info(self) -> Dict[str, Any]:
+        """
+        Collect model information using Ultralytics torch_utils helpers.
+
+        Returns:
+            dict with:
+              - model_info: list[str]        human-readable summary lines
+              - model_info_detailed: list[str] (currently same as model_info; placeholder for future detail)
+              - model_parameters: int         total parameters
+              - model_trainable_parameters: int (trainable parameters = gradients)
+              - model_gradients: int          alias of trainable parameters
+              - model_gflops: float | None    GFLOPs at current image size (None if unavailable)
+        """
+        imgsz: int = int(getattr(self.args, "imgsz", 640))
+        standard_imgsz: int = 640  # Ultralytics default reference size for published GFLOPs
+
+        # Core stats
+        total_params: int = get_num_params(self.model)
+        trainable_params: int = get_num_gradients(self.model)
+
+        # FLOPs (Ultralytics helper returns 0.0 if thop missing or fails)
+        flops_val: float = float(get_flops(self.model, imgsz))
+        gflops: Optional[float] = flops_val if flops_val > 0.0 else None
+        gflops_640: Optional[float] = None
+        if imgsz != standard_imgsz:
+            ref_flops = float(get_flops(self.model, standard_imgsz))
+            gflops_640 = ref_flops if ref_flops > 0.0 else None
+
+        # Attempt upstream summary (prints internally; we do not depend on return)
+        try:
+            if hasattr(self.model, "info"):
+                # verbose=False suppresses duplicate logging noise
+                self.model.info(verbose=False)
+        except Exception as e:
+            LOGGER.warning(f"model.info() call failed (non-fatal): {e}")
+
+        gflops_str: str = f"{gflops:.3f}" if gflops is not None else "n/a"
+        basic: list[str] = [
+            f"parameters: {total_params}",
+            f"trainable: {trainable_params}",
+            f"gflops@{imgsz}: {gflops_str}",
+        ]
+        if gflops_640 is not None:
+            basic.append(f"gflops@{standard_imgsz}: {gflops_640:.3f}")
+
+        result = {
+            "model_info": basic,
+            "model_info_detailed": basic,
+            "model_parameters": total_params,
+            "model_trainable_parameters": trainable_params,
+            "model_gradients": trainable_params,
+            "model_gflops": gflops,
+        }
+        if gflops_640 is not None:
+            result["model_gflops_640"] = gflops_640
+        return result
+
+
     def _setup_train(self, world_size):
         """Build dataloaders and optimizer on correct rank process."""
         # Model
@@ -255,21 +317,16 @@ class BaseTrainer:
         self.model = self.model.to(self.device)
         self.set_model_attributes()
 
-        # Append model.info() outputs into args.yaml once the model is built
+        # Append model info (with fallback) into args.yaml once the model is built
         if RANK in {-1, 0}:
             try:
-                basic_info = self.model.info(detailed=False, verbose=False)
-                detailed_info = self.model.info(detailed=True, verbose=False)
-                args_path = self.save_dir / "args.yaml"
-                args_dict = YAML.load(args_path)
-                # Store as multiline strings for readability
-                args_dict["model_info"] = "\n".join(basic_info) if isinstance(basic_info, (list, tuple)) else str(basic_info)
-                args_dict["model_info_detailed"] = (
-                    "\n".join(detailed_info) if isinstance(detailed_info, (list, tuple)) else str(detailed_info)
-                )
-                YAML.save(args_path, args_dict)
+                stats = self._collect_model_info()
+                args_path = self.save_dir / "profiling.yaml"
+
+                YAML.save(args_path, stats)
             except Exception as e:
-                LOGGER.warning(f"Failed to write model.info() to args.yaml: {e}")
+                LOGGER.warning(f"Failed to write model info to args.yaml: {e}")
+
 
         # Freeze layers
         freeze_list = (

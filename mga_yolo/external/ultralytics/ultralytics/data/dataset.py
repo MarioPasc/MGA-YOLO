@@ -407,16 +407,29 @@ class YOLODataset(BaseDataset):
         # If an augmented binary mask is present, downsample to model scales
         bin_mask = sample.get("bin_mask", None)
         if isinstance(bin_mask, np.ndarray):
+            # NOTE: Images get letterboxed to match the stride multiple of 8,16,32
+            # For example, our images get resized to 544x544, which is divisible by 32
+            # The problem is that here, we make the mask downsampling assuming the original
+            # mask is aligned with the image after letterboxing. We have to resize the mask to
+            # 544x544 first before downsampling. 
+            H, W = sample.get("ori_shape", (512, 512))[0] + 32, sample.get("ori_shape", (512, 512))[1] + 32
+
             multi_masks: List[torch.Tensor] = []
+            bin_mask = cv2.resize((bin_mask > 0).astype(np.uint8), (W, H), interpolation=cv2.INTER_AREA)
+            LOGGER.debug(f"Sample attributes: {json.dumps({k: str(v) for k,v in sample.items() if k != 'img'}, indent=2)}")
+            LOGGER.debug(f"Mask for index {index} resized to {W}x{H} before downsampling")
+            # Now that mask and image are aligned, downsample to  stride masks
             for s in (8, 16, 32):
                 ds_np = self._downsample_mask(bin_mask, s)
+                LOGGER.debug(f"Mask for index {index} downsampled to {ds_np.shape[1]}x{ds_np.shape[0]} at stride {s}")
                 multi_masks.append(torch.from_numpy(ds_np[None, ...].astype(np.float32)))  # (1,Hs,Ws)
             sample["masks_multi"] = multi_masks
 
+
             # Optional debugging: save augmented image/mask pairs
             out_dir = os.getenv("MGA_SAVE_AUG_MASKS", "")
-            max_saves = int(os.getenv("MGA_SAVE_MAX", "0") or 0)
             if out_dir:
+                max_saves = int(os.getenv("MGA_SAVE_MAX", "0") or 0)
                 try:
                     Path(out_dir).mkdir(parents=True, exist_ok=True)
                     do_save = max_saves <= 0 or (self._aug_save_count < max_saves)
@@ -483,7 +496,6 @@ class YOLODataset(BaseDataset):
         new_batch['batch_idx'] = torch.cat(new_batch['batch_idx'], 0)
         return new_batch
 
-    # (Removed duplicate __getitem__ that shadowed mask-loading logic above)
 
 
 class YOLOMultiModalDataset(YOLODataset):

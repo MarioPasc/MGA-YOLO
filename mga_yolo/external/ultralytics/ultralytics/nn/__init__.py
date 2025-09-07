@@ -15,10 +15,25 @@ from .tasks import (
 )
 
 # Import custom MGA modules so they are available to parse_model via globals()
-try:  # safe import in case MGA modules removed
+try:  # MGA custom module
     from mga_yolo.nn.modules.segmentation import MGAMaskHead  # noqa: F401
-except Exception:  # pragma: no cover - non-fatal
+except Exception:
     MGAMaskHead = None  # type: ignore
+    
+try:  # Masked ECA attention
+    from mga_yolo.nn.modules.masked_eca import MaskECA  # noqa: F401
+except Exception:
+    MaskECA = None  # type: ignore
+    
+try:  # Masked SPADE attention
+    from mga_yolo.nn.modules.masked_spade import MaskSPADE  # noqa: F401
+except Exception:
+    MaskSPADE = None  # type: ignore
+
+try:  # Masked CBAM attention
+    from mga_yolo.nn.modules.masked_cbam import MaskCBAM  # noqa: F401
+except Exception:
+    MaskCBAM = None  # type: ignore
 
 __all__ = (
     "attempt_load_one_weight",
@@ -32,5 +47,9 @@ __all__ = (
     "SegmentationModel",
     "ClassificationModel",
     "BaseModel",
+    # Our modules
     "MGAMaskHead",
+    "MaskECA",
+    "MaskSPADE",
+    "MaskCBAM",
 )

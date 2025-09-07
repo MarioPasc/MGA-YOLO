@@ -27,6 +27,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from mga_yolo.external.ultralytics.ultralytics.utils import LOGGER
+
 __all__ = ["MGAMaskHead"]
 
 

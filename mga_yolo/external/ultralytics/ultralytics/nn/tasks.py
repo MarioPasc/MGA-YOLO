@@ -83,7 +83,11 @@ try:  # Masked SPADE attention
     from mga_yolo.nn.modules.masked_spade import MaskSPADE  # noqa: F401
 except Exception:
     MaskSPADE = None  # type: ignore
-    
+
+try:  # Masked CBAM attention
+    from mga_yolo.nn.modules.masked_cbam import MaskCBAM  # noqa: F401
+except Exception:
+    MaskCBAM = None  # type: ignore
 
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1725,7 +1729,8 @@ def parse_model(d, ch, verbose=True):
             hidden = make_divisible(min(hidden, max_channels) * width, 8)
             args = [c_in, hidden, out_ch, *args[3:]]
             c2 = out_ch
-        elif m is MaskECA or m is MaskSPADE:  # custom attention: takes [feat, mask] and preserves channels
+        # custom attention: takes [feat, mask] and preserves channels
+        elif m is MaskECA or m is MaskSPADE or m is MaskCBAM:  
             c_in = ch[f[0]] if isinstance(f, (list, tuple)) else ch[f]
             if len(args) == 0:
                 args = [c_in]

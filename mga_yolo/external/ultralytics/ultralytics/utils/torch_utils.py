@@ -404,44 +404,126 @@ def model_info_for_loggers(trainer):
 
 
 def get_flops(model, imgsz=640):
-    """
-    Calculate FLOPs (floating point operations) for a model in billions.
+    """Return approximate model FLOPs (in billions) with robust fallbacks.
 
-    Attempts two calculation methods: first with a stride-based tensor for efficiency,
-    then falls back to full image size if needed (e.g., for RTDETR models). Returns 0.0
-    if thop library is unavailable or calculation fails.
+    This implementation tries (in order):
+      1. THOP on the live model (no deepcopy) using stride-sized dummy input.
+      2. THOP on the live model with full requested image size.
+      3. THOP on a deepcopy of the model (stride, then full size) if deepcopy is possible.
+      4. A lightweight manual hook-based conv FLOPs counter (covers Conv2d only) as an approximation.
+
+    Any failure proceeds to the next fallback. Returns 0.0 only if every method fails.
 
     Args:
-        model (nn.Module): The model to calculate FLOPs for.
-        imgsz (int | list, optional): Input image size.
+        model (nn.Module): Model to profile.
+        imgsz (int | list[int]): Square size or [h, w].
 
     Returns:
-        (float): The model FLOPs in billions.
+        float: GFLOPs (billions of FLOPs), or 0.0 if unavailable.
     """
-    try:
-        import thop
-    except ImportError:
-        thop = None  # conda support without 'ultralytics-thop' installed
+    try:  # lazy import
+        import thop  # type: ignore
+    except Exception:  # pragma: no cover
+        thop = None  # noqa: F841
 
-    if not thop:
-        return 0.0  # if not installed return 0.0 GFLOPs
-
+    model = de_parallel(model)
+    # Collect parameters; determine a consistent device and input channels.
     try:
-        model = de_parallel(model)
-        p = next(model.parameters())
-        if not isinstance(imgsz, list):
-            imgsz = [imgsz, imgsz]  # expand if int/float
-        try:
-            # Method 1: Use stride-based input tensor
-            stride = max(int(model.stride.max()), 32) if hasattr(model, "stride") else 32  # max stride
-            im = torch.empty((1, p.shape[1], stride, stride), device=p.device)  # input image in BCHW format
-            flops = thop.profile(deepcopy(model), inputs=[im], verbose=False)[0] / 1e9 * 2  # stride GFLOPs
-            return flops * imgsz[0] / stride * imgsz[1] / stride  # imgsz GFLOPs
-        except Exception:
-            # Method 2: Use actual image size (required for RTDETR models)
-            im = torch.empty((1, p.shape[1], *imgsz), device=p.device)  # input image in BCHW format
-            return thop.profile(deepcopy(model), inputs=[im], verbose=False)[0] / 1e9 * 2  # imgsz GFLOPs
+        params_iter = list(model.parameters())
     except Exception:
+        return 0.0
+    if not params_iter:
+        return 0.0
+
+    # Prefer a CUDA device if any parameter resides there.
+    param_devices = [p.device for p in params_iter]
+    device = next((d for d in param_devices if d.type == 'cuda'), param_devices[0])
+
+    # Infer input channels from first 4D convolution weight.
+    in_ch = 3
+    for t in params_iter:
+        if t.ndim == 4:  # (out_c, in_c, kH, kW)
+            in_ch = int(t.shape[1])
+            device = t.device  # ensure we use the conv weight device
+            break
+
+    if not isinstance(imgsz, (list, tuple)):
+        imgsz = [int(imgsz), int(imgsz)]
+    h, w = int(imgsz[0]), int(imgsz[1])
+
+    def _profile(thop_model, height, width):
+        im = torch.empty((1, in_ch, height, width), device=device)
+        # thop.profile returns (macs, params); multiply macs by 2 for FLOPs (mul+add)
+        macs, _ = thop.profile(thop_model, inputs=[im], verbose=False)
+        return float(macs) * 2.0 / 1e9
+
+    # 1 & 2: THOP on live model (avoid deepcopy first; deepcopy can fail for custom layers)
+    if 'thop' in globals() and thop is not None:
+        try:
+            stride = max(int(model.stride.max()), 32) if hasattr(model, 'stride') else 32
+            flops_stride = _profile(model, stride, stride)
+            return flops_stride * h / stride * w / stride
+        except Exception:
+            pass
+        try:
+            return _profile(model, h, w)
+        except Exception:
+            pass
+
+        # 3: Retry with deepcopy (some models mutate during profiling)
+        try:
+            mcopy = deepcopy(model)
+            try:
+                stride = max(int(mcopy.stride.max()), 32) if hasattr(mcopy, 'stride') else 32
+                flops_stride = _profile(mcopy, stride, stride)
+                return flops_stride * h / stride * w / stride
+            except Exception:
+                return _profile(mcopy, h, w)
+        except Exception:
+            pass
+
+    # 4: Manual minimal conv-only approximation via forward hooks
+    try:
+        conv_flops = 0.0
+        hooks = []
+
+        def conv_hook(module, input_, output):  # type: ignore
+            nonlocal conv_flops
+            # input_[0]: (B, Cin, Hin, Win); output: (B, Cout, Hout, Wout)
+            if not len(input_):
+                return
+            x = input_[0]
+            if not isinstance(x, torch.Tensor) or not isinstance(output, torch.Tensor):
+                return
+            b, cin, hin, win = x.shape
+            b, cout, hout, wout = output.shape
+            k_h, k_w = module.kernel_size
+            groups = module.groups
+            # FLOPs: (Mul+Add) -> 2 * Cout * (Cin/groups) * Kh * Kw * Hout * Wout
+            conv_flops += 2.0 * cout * (cin / groups) * k_h * k_w * hout * wout
+
+        for m in model.modules():
+            if isinstance(m, torch.nn.Conv2d):
+                hooks.append(m.register_forward_hook(conv_hook))
+
+        # Run a forward with full size
+        dummy = torch.zeros(1, in_ch, h, w, device=device)
+        model.eval()
+        with torch.no_grad():
+            try:
+                model(dummy)
+            except Exception:
+                # try stride size as last resort
+                stride = max(int(model.stride.max()), 32) if hasattr(model, 'stride') else 32
+                dummy2 = torch.zeros(1, in_ch, stride, stride, device=device)
+                model(dummy2)
+                scale = (h / stride) * (w / stride)
+                conv_flops *= scale
+        for h_ in hooks:
+            h_.remove()
+        return conv_flops / 1e9
+    except Exception as e:
+        LOGGER.warning(f"{colorstr('red', 'FLOPs:')} failed to compute FLOPs, error: {e}")
         return 0.0
 
 

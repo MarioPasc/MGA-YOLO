@@ -2,16 +2,6 @@
 # Example configuration for model comparison
 # You can use either the 'series' mapping form below or a top-level mapping.
 series:
-  baseline_yolo:
-    name: "YOLOv8s"
-    type: baseline
-    input:
-      - /home/mpascual/research/results/mga/Baseline/YOLOv8s/results.csv
-    style:
-      color: "#cc3311"
-      linestyle: "-"
-      marker: "o"
-      markersize: 2
 
   masked_spade_area:
     name: "cv.INTER_AREA"
@@ -22,7 +12,7 @@ series:
       color: "#0077bb"
       linestyle: "-"
       marker: "s"
-      markersize: 2
+      markersize: 1.5
 
   masked_spade_maxpool:
     name: "MAXPOOL"
@@ -33,7 +23,7 @@ series:
       color: "#009988"
       linestyle: "-"
       marker: "s"
-      markersize: 2
+      markersize: 1.5
 
   masked_spade_nearest:
     name: "cv.INTER_NEAREST"
@@ -44,4 +34,37 @@ series:
       color: "#ee7733"
       linestyle: "-"
       marker: "s"
-      markersize: 2
+      markersize: 1.5
+
+  masked_spade_pyrdown:
+    name: "PyrDown"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/trials/mask/Kendall_noUFL_PyrDown_MaskedSPADE_YOLOv8s/results.csv
+    style:
+      color: "#EE3377"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  masked_spade_skeleton_bresenham:
+    name: "SKELETON_BRESENHAM"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/trials/mask/Kendall_noUFL_SkeletonBresenham_MaskedSPADE_YOLOv8s/results.csv
+    style:
+      color: "#33bbee"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  baseline_yolo:
+    name: "YOLOv8s"
+    type: baseline
+    input:
+      - /home/mpascual/research/results/mga/Baseline/YOLOv8s/results.csv
+    style:
+      color: "#cc3311"
+      linestyle: "-"
+      marker: "o"
+      markersize: 1.5

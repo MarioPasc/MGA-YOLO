@@ -153,6 +153,8 @@ class MGAValidator(DetectionValidator):
         # align masks_multi to device/dtype of images for consistent loss
         if "img" in batch:
             B = int(batch["img"].shape[0])
+            LOGGER.debug(f"[MGAValidator] preprocess batch img shape={tuple(batch['img'].shape)}")
+            LOGGER.debug(f"[MGAValidator] Stride: {self.model.stride}")
             img_dtype = batch["img"].dtype
             device = self.device
             mm = batch.get("masks_multi", None)

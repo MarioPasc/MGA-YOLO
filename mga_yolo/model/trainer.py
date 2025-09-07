@@ -259,7 +259,7 @@ class MGATrainer(DetectionTrainer):
     def _collect_alpha_params(self) -> Dict[str, float]:
         """Return {'alpha_P3': a3, 'alpha_P4': a4, 'alpha_P5': a5} if present, else zeros.
 
-        It inspects MaskECA modules in EMA model if available, otherwise the current model.
+        It inspects MaskECA and MaskCBAM modules in EMA model if available, otherwise the current model.
         """
         out: Dict[str, float] = {"alpha_P3": 0.0, "alpha_P4": 0.0, "alpha_P5": 0.0}
         try:
@@ -268,10 +268,11 @@ class MGATrainer(DetectionTrainer):
                 return out
             # Late import to avoid circular imports on trainer init
             from mga_yolo.nn.modules.masked_eca import MaskECA  # type: ignore
+            from mga_yolo.nn.modules.masked_cbam import MaskCBAM # type: ignore
             has_any = False
             found = []  # list of tuples (name_or_None, channels_or_None, alpha_value)
             for m in model.modules():
-                if isinstance(m, MaskECA):
+                if isinstance(m, MaskECA) or isinstance(m, MaskCBAM):
                     has_any = True
                     name = getattr(m, "scale_name", None)
                     ch = getattr(getattr(m, "cfg", None), "channels", None)
