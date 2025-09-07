@@ -16,7 +16,8 @@
 
 task: mga
 mode: train
-model: configs/models/yolov8s_cbam.yaml
+model: configs/models/yolov8_cbam.yaml
+model_scale: l
 data: configs/data/mga_data.yaml
 epochs: 100
 name: "Kendall_noUFL_Area_MaskedCBAM_YOLOv8s_conf0001"
@@ -26,9 +27,9 @@ project: "/home/mpascual/research/results/mga/MGA_YOLO/results"
 MGA_MASK_METHOD: area
 MGA_MASK_BRIDGE: 0
 MGA_MASK_THRESH: 0.0
-MGA_SAVE_FM: True
+MGA_SAVE_FM: False
 MGA_SAVE_LAYERS: "15,18,21" # These are the pre-attention feature maps
-MGA_SAVE_FM_MAX: 4 # This means that we are going to save FM and Preds 4 times during training, that is, when the network is 25%, 50%, 75%, and 100% trained
+MGA_SAVE_FM_MAX: 1 # This means that we are going to save FM and Preds 4 times during training, that is, when the network is 25%, 50%, 75%, and 100% trained
 MGA_SKELETON_STRICT: 0 # 0: relaxed (faster), 1: strict (slower)
 
 # Hyperparameters ------------------------------------------------------------------------------------------------------

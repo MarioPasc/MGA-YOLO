@@ -1,0 +1,28 @@
+# We match each model to its hyperparameter under the "models" config, using this path
+# as root
+cfg_root: mga_yolo/config/models
+# cfg_root/
+#     models/
+#         ...
+#     hyperparams/
+#         ...
+kfold_root: /home/mpascual/research/datasets/angio/kfold
+output_root: /home/mpascual/research/results/mga/MGA_YOLO/results
+
+# Model-related parameters
+scales: ['n', 's', 'm', 'l']
+# You should replace the parameter "model_scale" in the hyp_cfg of the corresponding model
+# with each one of the above strings, for different runs
+models:
+  - MaskECA:
+      model_cfg: yolov8_eca.yaml
+      hyp_cfg: eca_defaults.yaml
+  - MaskSPADE:
+      model_cfg: yolov8_spade.yaml
+      hyp_cfg: spade_defaults.yaml
+  - MaskCBAM:
+      model_cfg: yolov8_cbam.yaml
+      hyp_cfg: cbam_defaults.yaml
+
+# Hardware and other stuff
+gpu: ['cuda:0', 'cuda:1']

@@ -1,6 +1,6 @@
 dataset: /home/mpascual/research/datasets/angio/arcade_mga
 # Root path used by Ultralytics to resolve train/val/test relative paths
-path: /home/mpascual/research/datasets/angio/arcade_mga
+path: /home/mpascual/research/datasets/angio/
 train: detection/images/train  
 val: detection/images/val
 test: detection/images/test  

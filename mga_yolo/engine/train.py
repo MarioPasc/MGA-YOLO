@@ -22,6 +22,11 @@ def train(config: Dict[str, Any]) -> Dict[str, Any] | None:
 	if "model" not in cfg:
 		raise ValueError("config must include 'model' entry (path to model YAML/weights)")
 	model_path = str(cfg.pop("model"))
+	scale = str(cfg.pop("model_scale", "s")).lower()
+	if scale not in ("n", "s", "m", "l", "x"):
+		raise ValueError(f"Invalid scale '{scale}'; must be one of n/s/m/l/x")
+	model_path = model_path.replace("yolov8", f"yolov8{scale}")
+	# 2) Task default if not provided
 	task = str(cfg.get("task", "mga"))
 
 	# Device default if not provided
