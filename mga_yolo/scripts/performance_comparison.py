@@ -44,7 +44,6 @@ import yaml # type: ignore
 import typer
 
 from mga_yolo.scripts import LOGGER
-from mga_yolo.engine.train import train as train_entry  # noqa: F401 (imported for context)
 
 app = typer.Typer(add_completion=False, help="Run performance comparison grid of experiments.")
 

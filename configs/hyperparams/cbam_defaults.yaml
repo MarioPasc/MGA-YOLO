@@ -20,13 +20,13 @@ model: configs/models/yolov8_cbam.yaml
 model_scale: s
 data: configs/data/mga_data.yaml
 epochs: 100
-name: "MaskedCBAM_YOLOv8s_gumbel"
-project: "/home/mpascual/research/results/mga/MGA_YOLO/results"
+name: "MaskedCBAM_YOLOv8s_gumbel_avgpool"
+project: "/home/mpascual/research/results/mga/MGA_YOLO"
 
 # Mask-Related Hyperparameters
 MGA_PROB_MODE: True # False: binary masks, True: probabilistic masks
 MGA_PROB_APPROACH: gumbel  #  (only used if MGA_PROB_MODE=True) 
-MGA_MASK_METHOD: area
+MGA_MASK_METHOD: avgpool
 MGA_MASK_BRIDGE: 0
 MGA_MASK_THRESH: 0.0
 MGA_SKELETON_STRICT: 0 # 0: relaxed (faster), 1: strict (slower)
@@ -127,9 +127,9 @@ val: True # (bool) validate/test during training
 split: val # (str) dataset split to use for validation, i.e. 'val', 'test' or 'train'
 save_json: False # (bool) save results to JSON file
 
-conf: 0.001 # (float, optional) object confidence threshold for detection (default 0.25 predict, 0.001 val)
+conf: 0.25 # (float, optional) object confidence threshold for detection (default 0.25 predict, 0.001 val)
 iou: 0.5 # (float) intersection over union (IoU) threshold for NMS
-max_det: 50 # (int) maximum number of detections per image
+max_det: 100 # (int) maximum number of detections per image
 
 half: False # (bool) use half precision (FP16)
 dnn: False # (bool) use OpenCV DNN for ONNX inference
