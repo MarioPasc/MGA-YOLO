@@ -43,7 +43,7 @@ def configure_matplotlib() -> None:
     # Requested typography
     plt.rcParams.update({
         'figure.dpi': 600,
-        'font.size': 8,
+        'font.size': 10,
         'font.family': 'serif',
         'font.serif': ['Times'],
         'axes.grid': True,
@@ -386,7 +386,7 @@ def fig_detection(series_cfgs: List[DataSeriesConfig],
     # Single legend outside
     handles, labels = axes[0, 0].get_legend_handles_labels()
     if handles:
-        fig.legend(handles, labels, loc="lower center", ncol=min(4, len(labels)), bbox_to_anchor=(0.5, -0.06))
+        fig.legend(handles, labels, loc="lower center", ncol=min(4, len(labels)), bbox_to_anchor=(0.5, -0.02*len(labels)))
     return fig
 
 
@@ -484,7 +484,7 @@ def fig_segmentation(series_cfgs: List[DataSeriesConfig],
     # Legend
     handles, labels = axes[0, 0].get_legend_handles_labels()
     if handles:
-        fig.legend(handles, labels, loc="lower center", ncol=min(4, len(labels)), bbox_to_anchor=(0.5, -0.04))
+        fig.legend(handles, labels, loc="lower center", ncol=min(4, len(labels)), bbox_to_anchor=(0.5, -0.02*len(labels)))
     return fig
 
 
@@ -518,7 +518,7 @@ def fig_performance(series_cfgs: List[DataSeriesConfig],
 
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:
-        fig.legend(handles, labels, loc="lower center", ncol=min(4, len(labels)), bbox_to_anchor=(0.5, -0.1))
+        fig.legend(handles, labels, loc="lower center", ncol=min(4, len(labels)), bbox_to_anchor=(0.5, -0.04*len(labels)))
     return fig
 
 

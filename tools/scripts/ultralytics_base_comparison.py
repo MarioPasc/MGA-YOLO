@@ -101,6 +101,7 @@ def _load_yaml(path: Path) -> dict:
 
 def _resolve_weights(template: str, scale: str) -> str:
 	# Allow either implicit formatting or pass-through.
+    
 	try:
 		return template.format(scale=scale)
 	except Exception:  # noqa: BLE001

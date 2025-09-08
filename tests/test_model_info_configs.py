@@ -7,10 +7,6 @@ from mga_yolo.external.ultralytics.ultralytics import YOLO
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "configs" / "models"
 
 MODEL_CFGS = [
-    "yolov8_cbam.yaml",
-    "yolov8_eca.yaml",
-    "yolov8_seg_heads.yaml",
-    "yolov8_spade.yaml",
     "yolov8.yaml",
 ]
 

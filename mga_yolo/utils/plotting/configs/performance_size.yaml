@@ -1,0 +1,32 @@
+root_dir: /home/mpascual/misc/x2go_shared/experiment
+out_dir: /home/mpascual/research/results/mga/plots/performance
+models: 
+  - MaskedCBAM: 
+    - color: "#F94902"
+    - linestyle: "-"
+    - marker: "s"
+    - markersize: 1.5
+    - label: "CBAM"
+  - MaskedSPADE: 
+    - color: "#F19903"
+    - linestyle: "-"
+    - marker: "s"
+    - markersize: 1.5
+    - label: "SPADE"
+  - MaskedECA: 
+    - color: "#CEFFFF"
+    - linestyle: "-"
+    - marker: "s"
+    - markersize: 1.5
+    - label: "ECA"
+  - YOLOv8:
+    - color: "#AAAAAA"
+    - linestyle: "--"
+    - marker: "o"
+    - markersize: 1.5
+    - label: "YOLOv8s"
+scales: ['n', 's', 'm', 'l']
+folds: [1, 2, 3]
+metrics_to_plot: ['metrics/mAP50(B)', 'metrics/mAP50-95(B)']
+size_to_plot: ['model_parameters', 'model_gflops640', 'model_gflops']
+method: 'max'

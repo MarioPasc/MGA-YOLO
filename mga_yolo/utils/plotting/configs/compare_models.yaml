@@ -1,0 +1,68 @@
+# S-Series
+series:
+
+  eca_kendall_gumbel_avgpool:
+    name: "ECA+Kendall+Gumbel+AvgPool"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/MaskedECA_YOLOv8s_gumbel_avgpool/results.csv
+    style:
+      color: "#CEFFFF"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  eca_kendall_area:
+    name: "ECA+Kendall+Area"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/MaskedECA_YOLOv8s/results.csv
+    style:
+      color: "#A2F49B"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  spade_kendall_gumbel_avgpool:
+    name: "SPADE+Kendall+Gumbel+AvgPool"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/MaskedSPADE_YOLOv8s_gumbel_avgpool/results.csv
+    style:
+      color: "#D5CE04"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  spade_kendall_area:
+    name: "SPADE+Kendall+Area"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/MaskedSPADE_YOLOv8s/results.csv
+    style:
+      color: "#F19903"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  cbam_kendall_gumbel_avgpool:
+    name: "CBAM+Kendall+Gumbel+AvgPool"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/MaskedCBAM_YOLOv8s_gumbel_avgpool/results.csv
+    style:
+      color: "#F94902"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
+  baseline_yolo:
+    name: "YOLOv8s"
+    type: baseline
+    input:
+      - /home/mpascual/research/results/mga/Baseline/YOLOv8s/results.csv
+    style:
+      color: "#A80003"
+      linestyle: "-"
+      marker: "o"
+      markersize: 1.5
