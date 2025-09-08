@@ -56,6 +56,9 @@ import yaml  # type: ignore
 import typer
 from ultralytics.utils import LOGGER
 
+# Repository root (assumes this file is at <root>/tools/scripts/)
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 app = typer.Typer(add_completion=False, help="Run Ultralytics base model comparison grid.")
 
 
@@ -161,12 +164,13 @@ def prepare_run(exp: Experiment, output_root: Path, experiment_name: str) -> dic
 # ------------------------- Subprocess Management ------------------------- #
 
 def launch_subprocess(exp: Experiment, run_meta: dict[str, Any], device: str, python: str) -> subprocess.Popen:
-	"""Launch training via tools/cli/train.py in a new process."""
+	"""Launch training via tools.cli.train module to ensure proper package imports."""
 	project: Path = run_meta["project"]
 	name: str = run_meta["name"]
 	cmd: list[str] = [
 		python,
-		str(Path("tools/cli/train.py")),
+		"-m",
+		"tools.cli.train",
 		"--cfg",
 		str(exp.hyp_cfg),
 		"--weights",
@@ -182,7 +186,9 @@ def launch_subprocess(exp: Experiment, run_meta: dict[str, Any], device: str, py
 	]
 	env = os.environ.copy()
 	env["CUDA_VISIBLE_DEVICES"] = device.split(":")[-1] if device.startswith("cuda:") else ""
-	return subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+	# Prepend repo root to PYTHONPATH for safety
+	env["PYTHONPATH"] = f"{REPO_ROOT}:{env.get('PYTHONPATH','')}" if env.get("PYTHONPATH") else str(REPO_ROOT)
+	return subprocess.Popen(cmd, cwd=str(REPO_ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
 
 _EPOCH_PATTERNS = [
