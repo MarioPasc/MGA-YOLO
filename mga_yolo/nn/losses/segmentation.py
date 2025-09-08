@@ -101,7 +101,13 @@ class SegmentationLoss(nn.Module):
             if tgt.dim() == 3:
                 tgt = tgt.unsqueeze(1)
             if tgt.shape[-2:] != pred.shape[-2:]:
-                tgt = F.interpolate(tgt.float(), size=pred.shape[-2:], mode="nearest")
+                import os 
+                MGA_PROB_MODE = os.getenv("MGA_PROB_MODE", False)
+                if MGA_PROB_MODE:
+                    # We are using probabilistic masks, so we must use bilinear interpolation
+                    tgt = F.interpolate(tgt.float(), size=pred.shape[-2:], mode="bilinear", align_corners=False)
+                else:
+                    tgt = F.interpolate(tgt.float(), size=pred.shape[-2:], mode="nearest")
 
             w_scale = self.cfg.scale_weights[i] if i < len(self.cfg.scale_weights) else 1.0
 

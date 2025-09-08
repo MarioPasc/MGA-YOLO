@@ -1,14 +1,11 @@
 from __future__ import annotations
-from typing import Any, Dict, List
+from typing import Any, Dict
 
-from copy import deepcopy
 import torch
-import torch.nn as nn
 
 from mga_yolo.external.ultralytics.ultralytics.models.yolo.detect.train import DetectionTrainer
 from mga_yolo.external.ultralytics.ultralytics.utils import LOGGER, RANK
-
-from mga_yolo.nn.losses.segmentation import SegmentationLoss, SegLossConfig
+from mga_yolo.data.dataset import MGADataset
 
 
 class MGATrainer(DetectionTrainer):
@@ -46,8 +43,26 @@ class MGATrainer(DetectionTrainer):
 
 
     def build_dataset(self, img_path: str, mode: str = "train", batch: int | None = None):
-        """Dataset building unchanged, just delegate."""
-        return super().build_dataset(img_path, mode, batch)
+        """Dataset building unchanged"""
+        gs = max(int(self.model.stride.max() if self.model else 0), 32)
+        args = self.args
+        return MGADataset(
+            img_path=img_path,
+            imgsz=args.imgsz,
+            batch_size=batch,
+            augment=mode == "train",
+            hyp=args,
+            rect=(args.rect or (mode == "val")),
+            cache=args.cache or None,
+            single_cls=args.single_cls or False,
+            stride=int(gs),
+            pad=0.0 if mode == "train" else 0.5,
+            prefix=f"{mode}: ",
+            task=args.task,
+            classes=args.classes,
+            data=self.data,
+            fraction=args.fraction if mode == "train" else 1.0,
+        )
 
     def get_model(self, cfg: str | None = None, weights: str | None = None, verbose: bool = True):  # type: ignore[override]
         """Return an MGAModel so forward outputs include segmentation logits for training/val."""

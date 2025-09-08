@@ -1,7 +1,11 @@
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, Union, Sequence
+
+from mga_yolo.nn.modules.probmaskgater import ProbMaskGater
 
 class MaskCBAM(nn.Module):
     """
@@ -58,6 +62,21 @@ class MaskCBAM(nn.Module):
 
         # ---- α-skip (learnable positive strength) ----
         self.beta = nn.Parameter(torch.zeros((), dtype=torch.float32))  # α=softplus(β)>0
+        
+        # ---- Mask Gating Mode ----
+        MGA_PROB_MODE = os.getenv("MGA_PROB_MODE", False)
+        if MGA_PROB_MODE:
+            MGA_PROB_APPROACH = os.getenv("MGA_PROB_APPROACH", "gumbel")
+            # Curate MGA_PROB_APPROACH to be a literal from accepted types in ProbMaskGater
+            if MGA_PROB_APPROACH not in {"deterministic","gumbel","hard_st","bernoulli_detach"}:
+                raise ValueError(f"MGA_PROB_APPROACH must be one of "
+                                 f"{{'deterministic','gumbel','hard_st','bernoulli_detach'}}, got {MGA_PROB_APPROACH}")
+            self.gater = ProbMaskGater(mode=MGA_PROB_APPROACH, 
+                                       tau=1.0, 
+                                       p_min=0.0, 
+                                       threshold=0.5, 
+                                       seed=None)
+
 
     @staticmethod
     def _ensure_4d_mask(mask: torch.Tensor) -> torch.Tensor:
@@ -139,6 +158,11 @@ class MaskCBAM(nn.Module):
         else:
             feat, mask = x, None
         assert isinstance(feat, torch.Tensor) and feat.dim() == 4
+        
+        # Apply gate to mask if probabilistic masks are enabled
+        if os.getenv("MGA_PROB_MODE", False) and mask is not None:
+            mask = self.gater(mask)
+        
         # CAM → SAM
         cam_out = self._cam(feat, mask)
         sam_out = self._sam(cam_out, mask)

@@ -1,20 +1,19 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
+from __future__ import annotations
+
 import json
 from collections import defaultdict
 from itertools import repeat
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
-import os
-from typing import Any, Dict, List, Optional, Tuple
-import math
+from typing import Any
 
 import cv2
 import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import ConcatDataset
-import torch.nn.functional as F
 
 from ultralytics.utils import LOCAL_RANK, LOGGER, NUM_THREADS, TQDM, colorstr
 from ultralytics.utils.instance import Instances
@@ -73,7 +72,7 @@ class YOLODataset(BaseDataset):
         >>> dataset.get_labels()
     """
 
-    def __init__(self, *args, data: Optional[Dict] = None, task: str = "detect", **kwargs):
+    def __init__(self, *args, data: dict | None = None, task: str = "detect", **kwargs):
         """
         Initialize the YOLODataset.
 
@@ -86,19 +85,11 @@ class YOLODataset(BaseDataset):
         self.use_segments = task == "segment"
         self.use_keypoints = task == "pose"
         self.use_obb = task == "obb"
-        # Ensure data is always a dict to avoid optional access issues
-        self.data = data or {}
+        self.data = data
         assert not (self.use_segments and self.use_keypoints), "Can not use both segments and keypoints."
-        # Extract channels but avoid passing it to BaseDataset to prevent duplicate-value issues in static analysis
-        ch = kwargs.pop("channels", self.data.get("channels", 3))
-        super().__init__(*args, **kwargs)
-        # Patch channels-dependent fields post-init
-        self.channels = ch
-        self.cv2_flag = cv2.IMREAD_GRAYSCALE if ch == 1 else cv2.IMREAD_COLOR
-        # Debug saving counter for augmented masks/images
-        self._aug_save_count = 0
+        super().__init__(*args, channels=self.data.get("channels", 3), **kwargs)
 
-    def cache_labels(self, path: Path = Path("./labels.cache")) -> Dict:
+    def cache_labels(self, path: Path = Path("./labels.cache")) -> dict:
         """
         Cache dataset labels, check images and read shapes.
 
@@ -166,14 +157,14 @@ class YOLODataset(BaseDataset):
         save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
         return x
 
-    def get_labels(self) -> List[Dict]:
+    def get_labels(self) -> list[dict]:
         """
         Return dictionary of labels for YOLO training.
 
         This method loads labels from disk or cache, verifies their integrity, and prepares them for training.
 
         Returns:
-            (List[dict]): List of label dictionaries, each containing information about an image and its annotations.
+            (list[dict]): List of label dictionaries, each containing information about an image and its annotations.
         """
         self.label_files = img2label_paths(self.im_files)
         cache_path = Path(self.label_files[0]).parent.with_suffix(".cache")
@@ -216,7 +207,7 @@ class YOLODataset(BaseDataset):
             LOGGER.warning(f"Labels are missing or empty in {cache_path}, training may not work correctly. {HELP_URL}")
         return labels
 
-    def build_transforms(self, hyp: Optional[Dict] = None) -> Compose:
+    def build_transforms(self, hyp: dict | None = None) -> Compose:
         """
         Build and append transforms to the list.
 
@@ -248,7 +239,7 @@ class YOLODataset(BaseDataset):
         )
         return transforms
 
-    def close_mosaic(self, hyp: Dict) -> None:
+    def close_mosaic(self, hyp: dict) -> None:
         """
         Disable mosaic, copy_paste, mixup and cutmix augmentations by setting their probabilities to 0.0.
 
@@ -261,7 +252,7 @@ class YOLODataset(BaseDataset):
         hyp.cutmix = 0.0
         self.transforms = self.build_transforms(hyp)
 
-    def update_labels_info(self, label: Dict) -> Dict:
+    def update_labels_info(self, label: dict) -> dict:
         """
         Update label format for different tasks.
 
@@ -292,172 +283,21 @@ class YOLODataset(BaseDataset):
         else:
             segments = np.zeros((0, segment_resamples, 2), dtype=np.float32)
         label["instances"] = Instances(bboxes, segments, keypoints, bbox_format=bbox_format, normalized=normalized)
-
-        # Load per-image binary mask before any transforms so it can be augmented together
-        try:
-            data_cfg = getattr(self, "data", {}) or {}
-            data_root = data_cfg.get("dataset", None)
-            masks_dir = data_cfg.get("masks_dir", None)
-            mask_path = self._infer_mask_path(label.get("im_file", ""), data_root, masks_dir)
-            if mask_path is not None and mask_path.exists():
-                raw = cv2.imread(mask_path.as_posix(), cv2.IMREAD_GRAYSCALE)
-                if raw is not None:
-                    label["bin_mask"] = (raw > 0).astype(np.uint8)
-        except Exception as e:  # pragma: no cover
-            LOGGER.debug(f"Mask preload failed for {label.get('im_file','')}: {e}")
-
         return label
 
     @staticmethod
-    def _infer_mask_path(im_file: str, data_root: Optional[str], masks_dir: Optional[str]) -> Optional[Path]:
-        if data_root is None or masks_dir is None:
-            return None
-        stem = Path(im_file).stem
-        # Support common mask extensions
-        for ext in (".png", ".jpg", ".jpeg", ".tif", ".tiff"):
-            p = Path(data_root) / masks_dir / f"{stem}{ext}"
-            if p.exists():
-                return p
-        return None
-
-    @staticmethod
-    def _downsample_mask(mask: np.ndarray, stride: int) -> np.ndarray:
-        """Downsample a binary mask by stride using configurable methods.
-
-        Env MGA_MASK_METHOD controls algorithm:
-          - 'nearest'  : super fast but low quality (for CI/smoke)
-          - 'area'     : fast high-quality (INTER_AREA + >0 + optional close)
-          - 'maxpool'  : block-wise max pooling
-          - 'pyrdown'  : repeated pyrDown (power-of-two strides)
-          - otherwise  : use connectivity-preserving utility (skeleton_bresenham)
-        Env MGA_MASK_BRIDGE=0 disables 3x3 closing bridge (default on)
-        Env MGA_MASK_THRESH sets threshold for 'area' method (default 0.0, i.e., >0)
+    def collate_fn(batch: list[dict]) -> dict:
         """
-        method = os.getenv("MGA_MASK_METHOD", "skeleton_bresenham").lower()
-        bridge = os.getenv("MGA_MASK_BRIDGE", "1") not in {"0", "false", "False"}
-        thresh = float(os.getenv("MGA_MASK_THRESH", "0.0"))
+        Collate data samples into batches.
 
-        # unify dtype to uint8 binary {0,1}
-        if mask.dtype != np.uint8:
-            mask = (mask > 0).astype(np.uint8)
+        Args:
+            batch (list[dict]): List of dictionaries containing sample data.
 
-        if stride <= 1:
-            return mask
-
-        h, w = mask.shape
-        nh, nw = math.ceil(h / stride), math.ceil(w / stride)
-
-        if method == "nearest":
-            return cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
-
-        if method == "area":
-            small = cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_AREA)
-            out = (small > thresh).astype(np.uint8)
-            if bridge:
-                kernel = np.ones((3, 3), np.uint8)
-                out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
-            return out
-
-        if method == "maxpool":
-            pad_h = (stride - (h % stride)) % stride
-            pad_w = (stride - (w % stride)) % stride
-            if pad_h or pad_w:
-                mask_pad = np.pad(mask, ((0, pad_h), (0, pad_w)), mode="constant", constant_values=0)
-            else:
-                mask_pad = mask
-            H2, W2 = mask_pad.shape
-            view = mask_pad.reshape(H2 // stride, stride, W2 // stride, stride)
-            return view.max(axis=(1, 3)).astype(np.uint8)
-
-        if method == "pyrdown":
-            s = stride
-            out = mask.copy()
-            # only valid if stride is power of two; otherwise fall back
-            if s & (s - 1) == 0:
-                while s > 1:
-                    out = cv2.pyrDown(out)
-                    s //= 2
-                out = (out > 0).astype(np.uint8)
-                if bridge:
-                    kernel = np.ones((3, 3), np.uint8)
-                    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel, iterations=1)
-                return out
-
-        # Default/fallback: call connectivity-preserving utility
-        if downsample_preserve_connectivity and DownsampleConfig:
-            try:
-                return downsample_preserve_connectivity(
-                    mask,
-                    DownsampleConfig(
-                        factor=stride,
-                        method="skeleton_bresenham",
-                        threshold=thresh if thresh > 0 else 0.2,
-                        close_diagonals=bridge,
-                    ),
-                )
-            except Exception as e:  # pragma: no cover
-                LOGGER.debug(
-                    f"Connectivity-preserving downsample failed (stride={stride}, method={method}): {e}; using INTER_NEAREST"
-                )
-
-        return cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
-
-    def __getitem__(self, index: int) -> Dict[str, Any]:
-        sample = super().__getitem__(index)
-        # If an augmented binary mask is present, downsample to model scales
-        bin_mask = sample.get("bin_mask", None)
-        if isinstance(bin_mask, np.ndarray):
-            # NOTE: Images get letterboxed to match the stride multiple of 8,16,32
-            # For example, our images get resized to 544x544, which is divisible by 32
-            # The problem is that here, we make the mask downsampling assuming the original
-            # mask is aligned with the image after letterboxing. We have to resize the mask to
-            # 544x544 first before downsampling. 
-            H, W = sample.get("ori_shape", (512, 512))[0] + 32, sample.get("ori_shape", (512, 512))[1] + 32
-
-            multi_masks: List[torch.Tensor] = []
-            bin_mask = cv2.resize((bin_mask > 0).astype(np.uint8), (W, H), interpolation=cv2.INTER_AREA)
-            LOGGER.debug(f"Sample attributes: {json.dumps({k: str(v) for k,v in sample.items() if k != 'img'}, indent=2)}")
-            LOGGER.debug(f"Mask for index {index} resized to {W}x{H} before downsampling")
-            # Now that mask and image are aligned, downsample to  stride masks
-            for s in (8, 16, 32):
-                ds_np = self._downsample_mask(bin_mask, s)
-                LOGGER.debug(f"Mask for index {index} downsampled to {ds_np.shape[1]}x{ds_np.shape[0]} at stride {s}")
-                multi_masks.append(torch.from_numpy(ds_np[None, ...].astype(np.float32)))  # (1,Hs,Ws)
-            sample["masks_multi"] = multi_masks
-
-
-            # Optional debugging: save augmented image/mask pairs
-            out_dir = os.getenv("MGA_SAVE_AUG_MASKS", "")
-            if out_dir:
-                max_saves = int(os.getenv("MGA_SAVE_MAX", "0") or 0)
-                try:
-                    Path(out_dir).mkdir(parents=True, exist_ok=True)
-                    do_save = max_saves <= 0 or (self._aug_save_count < max_saves)
-                    if do_save:
-                        stem = Path(sample.get("im_file", f"idx_{index}")).stem
-                        # Save mask (uint8 0/255)
-                        m = (bin_mask * 255).astype(np.uint8)
-                        cv2.imwrite(str(Path(out_dir) / f"{stem}_mask.png"), m)
-                        # Save image as uint8 BGR
-                        img_t: torch.Tensor = sample.get("img")  # (C,H,W)
-                        if isinstance(img_t, torch.Tensor):
-                            img_np = (img_t.detach().cpu().numpy().transpose(1, 2, 0))
-                            if img_np.dtype != np.uint8:
-                                # Format._format_img kept uint8; but if float, scale back
-                                img_show = np.clip(img_np, 0, 255).astype(np.uint8)
-                            else:
-                                img_show = img_np
-                            # If image is CHW in RGB/BGR already, trust as BGR for saving
-                            cv2.imwrite(str(Path(out_dir) / f"{stem}_img.png"), img_show)
-                        self._aug_save_count += 1
-                except Exception as e:  # pragma: no cover
-                    LOGGER.debug(f"Failed saving augmented mask/image for index {index}: {e}")
-        return sample
-
-    @staticmethod
-    def collate_fn(batch: List[Dict]) -> Dict:
+        Returns:
+            (dict): Collated batch with stacked tensors.
+        """
         new_batch = {}
-        batch = [dict(sorted(b.items())) for b in batch]
+        batch = [dict(sorted(b.items())) for b in batch]  # make sure the keys are in the same order
         keys = batch[0].keys()
         values = list(zip(*[list(b.values()) for b in batch]))
         for i, k in enumerate(keys):
@@ -469,33 +309,11 @@ class YOLODataset(BaseDataset):
             if k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb"}:
                 value = torch.cat(value, 0)
             new_batch[k] = value
-        # Stack multi-scale masks if present
-        if any('masks_multi' in b for b in batch):
-            # Transpose list-of-lists: scales x batch
-            scales = len(batch[0].get('masks_multi', []))
-            stacked = []
-            for si in range(scales):
-                tensors = [b['masks_multi'][si] for b in batch if 'masks_multi' in b]
-                if tensors:
-                    # Pad to max H,W in this scale across batch for stacking
-                    max_h = max(t.shape[1] for t in tensors)
-                    max_w = max(t.shape[2] for t in tensors)
-                    padded = []
-                    for t in tensors:
-                        if t.shape[1] != max_h or t.shape[2] != max_w:
-                            pad_h = max_h - t.shape[1]
-                            pad_w = max_w - t.shape[2]
-                            t = F.pad(t, (0, pad_w, 0, pad_h), value=0.0)
-                        padded.append(t)
-                    stacked.append(torch.stack(padded, 0))  # (B,1,H,W)
-            if stacked:
-                new_batch['masks_multi'] = stacked  # list[Tensor] length=3
-        new_batch['batch_idx'] = list(new_batch['batch_idx'])
-        for i in range(len(new_batch['batch_idx'])):
-            new_batch['batch_idx'][i] += i
-        new_batch['batch_idx'] = torch.cat(new_batch['batch_idx'], 0)
+        new_batch["batch_idx"] = list(new_batch["batch_idx"])
+        for i in range(len(new_batch["batch_idx"])):
+            new_batch["batch_idx"][i] += i  # add target image index for build_targets()
+        new_batch["batch_idx"] = torch.cat(new_batch["batch_idx"], 0)
         return new_batch
-
 
 
 class YOLOMultiModalDataset(YOLODataset):
@@ -515,7 +333,7 @@ class YOLOMultiModalDataset(YOLODataset):
         >>> print(batch.keys())  # Should include 'texts'
     """
 
-    def __init__(self, *args, data: Optional[Dict] = None, task: str = "detect", **kwargs):
+    def __init__(self, *args, data: dict | None = None, task: str = "detect", **kwargs):
         """
         Initialize a YOLOMultiModalDataset.
 
@@ -527,7 +345,7 @@ class YOLOMultiModalDataset(YOLODataset):
         """
         super().__init__(*args, data=data, task=task, **kwargs)
 
-    def update_labels_info(self, label: Dict) -> Dict:
+    def update_labels_info(self, label: dict) -> dict:
         """
         Add text information for multi-modal model training.
 
@@ -544,7 +362,7 @@ class YOLOMultiModalDataset(YOLODataset):
 
         return labels
 
-    def build_transforms(self, hyp: Optional[Dict] = None) -> Compose:
+    def build_transforms(self, hyp: dict | None = None) -> Compose:
         """
         Enhance data transformations with optional text augmentation for multi-modal training.
 
@@ -574,7 +392,7 @@ class YOLOMultiModalDataset(YOLODataset):
         Return category names for the dataset.
 
         Returns:
-            (Set[str]): List of class names.
+            (set[str]): List of class names.
         """
         names = self.data["names"].values()
         return {n.strip() for name in names for n in name.split("/")}  # category names
@@ -593,7 +411,7 @@ class YOLOMultiModalDataset(YOLODataset):
         return category_freq
 
     @staticmethod
-    def _get_neg_texts(category_freq: Dict, threshold: int = 100) -> List[str]:
+    def _get_neg_texts(category_freq: dict, threshold: int = 100) -> list[str]:
         """Get negative text samples based on frequency threshold."""
         threshold = min(max(category_freq.values()), 100)
         return [k for k, v in category_freq.items() if v >= threshold]
@@ -635,7 +453,7 @@ class GroundingDataset(YOLODataset):
         self.max_samples = max_samples
         super().__init__(*args, task=task, data={"channels": 3}, **kwargs)
 
-    def get_img_files(self, img_path: str) -> List:
+    def get_img_files(self, img_path: str) -> list:
         """
         The image files would be read in `get_labels` function, return empty list here.
 
@@ -647,7 +465,7 @@ class GroundingDataset(YOLODataset):
         """
         return []
 
-    def verify_labels(self, labels: List[Dict[str, Any]]) -> None:
+    def verify_labels(self, labels: list[dict[str, Any]]) -> None:
         """
         Verify the number of instances in the dataset matches expected counts.
 
@@ -656,7 +474,7 @@ class GroundingDataset(YOLODataset):
         against a predefined set of datasets with known instance counts.
 
         Args:
-            labels (List[Dict[str, Any]]): List of label dictionaries, where each dictionary
+            labels (list[dict[str, Any]]): List of label dictionaries, where each dictionary
                 contains dataset annotations. Each label dict must have a 'bboxes' key with
                 a numpy array or tensor containing bounding box coordinates.
 
@@ -682,7 +500,7 @@ class GroundingDataset(YOLODataset):
                 return
         LOGGER.warning(f"Skipping instance count verification for unrecognized dataset '{self.json_file}'")
 
-    def cache_labels(self, path: Path = Path("./labels.cache")) -> Dict[str, Any]:
+    def cache_labels(self, path: Path = Path("./labels.cache")) -> dict[str, Any]:
         """
         Load annotations from a JSON file, filter, and normalize bounding boxes for each image.
 
@@ -690,7 +508,7 @@ class GroundingDataset(YOLODataset):
             path (Path): Path where to save the cache file.
 
         Returns:
-            (Dict[str, Any]): Dictionary containing cached labels and related information.
+            (dict[str, Any]): Dictionary containing cached labels and related information.
         """
         x = {"labels": []}
         LOGGER.info("Loading annotation file...")
@@ -773,12 +591,12 @@ class GroundingDataset(YOLODataset):
         save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
         return x
 
-    def get_labels(self) -> List[Dict]:
+    def get_labels(self) -> list[dict]:
         """
         Load labels from cache or generate them from JSON file.
 
         Returns:
-            (List[dict]): List of label dictionaries, each containing information about an image and its annotations.
+            (list[dict]): List of label dictionaries, each containing information about an image and its annotations.
         """
         cache_path = Path(self.json_file).with_suffix(".cache")
         try:
@@ -795,7 +613,7 @@ class GroundingDataset(YOLODataset):
             LOGGER.info(f"Load {self.json_file} from cache file {cache_path}")
         return labels
 
-    def build_transforms(self, hyp: Optional[Dict] = None) -> Compose:
+    def build_transforms(self, hyp: dict | None = None) -> Compose:
         """
         Configure augmentations for training with optional text loading.
 
@@ -836,7 +654,7 @@ class GroundingDataset(YOLODataset):
         return category_freq
 
     @staticmethod
-    def _get_neg_texts(category_freq: Dict, threshold: int = 100) -> List[str]:
+    def _get_neg_texts(category_freq: dict, threshold: int = 100) -> list[str]:
         """Get negative text samples based on frequency threshold."""
         threshold = min(max(category_freq.values()), 100)
         return [k for k, v in category_freq.items() if v >= threshold]
@@ -859,19 +677,19 @@ class YOLOConcatDataset(ConcatDataset):
     """
 
     @staticmethod
-    def collate_fn(batch: List[Dict]) -> Dict:
+    def collate_fn(batch: list[dict]) -> dict:
         """
         Collate data samples into batches.
 
         Args:
-            batch (List[dict]): List of dictionaries containing sample data.
+            batch (list[dict]): List of dictionaries containing sample data.
 
         Returns:
             (dict): Collated batch with stacked tensors.
         """
         return YOLODataset.collate_fn(batch)
 
-    def close_mosaic(self, hyp: Dict) -> None:
+    def close_mosaic(self, hyp: dict) -> None:
         """
         Set mosaic, copy_paste and mixup options to 0.0 and build transformations.
 
@@ -968,7 +786,7 @@ class ClassificationDataset:
             else classify_transforms(size=args.imgsz)
         )
 
-    def __getitem__(self, i: int) -> Dict:
+    def __getitem__(self, i: int) -> dict:
         """
         Return subset of data and targets corresponding to given indices.
 
@@ -997,7 +815,7 @@ class ClassificationDataset:
         """Return the total number of samples in the dataset."""
         return len(self.samples)
 
-    def verify_images(self) -> List[Tuple]:
+    def verify_images(self) -> list[tuple]:
         """
         Verify all images in dataset.
 
@@ -1042,15 +860,3 @@ class ClassificationDataset:
             x["msgs"] = msgs  # warnings
             save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
             return samples
-
-try:
-    from mga_yolo.utils.mask_downsample import DownsampleConfig, downsample_preserve_connectivity  # type: ignore
-except Exception:  # pragma: no cover
-    class DownsampleConfig:  # minimal stub
-        def __init__(self, factor: int, method: str = "skeleton_bresenham", threshold: float = 0.2, close_diagonals: bool = True):
-            self.factor = factor
-            self.method = method
-            self.threshold = threshold
-            self.close_diagonals = close_diagonals
-    def downsample_preserve_connectivity(mask, cfg):
-        return mask  # identity fallback
