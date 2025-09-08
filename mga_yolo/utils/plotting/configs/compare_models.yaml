@@ -45,6 +45,17 @@ series:
       marker: "s"
       markersize: 1.5
 
+  cbam_kendall_area:
+    name: "CBAM+Kendall+Area"
+    type: mga
+    input:
+      - /home/mpascual/research/results/mga/MGA_YOLO/results/MaskedCBAM_YOLOv8s/results.csv
+    style:
+      color: "#F6790B"
+      linestyle: "-"
+      marker: "s"
+      markersize: 1.5
+
   cbam_kendall_gumbel_avgpool:
     name: "CBAM+Kendall+Gumbel+AvgPool"
     type: mga

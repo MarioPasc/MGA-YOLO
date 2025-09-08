@@ -19,12 +19,12 @@ models:
     - marker: "s"
     - markersize: 1.5
     - label: "ECA"
-  - YOLOv8:
+  - BaseYOLO:
     - color: "#AAAAAA"
     - linestyle: "--"
     - marker: "o"
     - markersize: 1.5
-    - label: "YOLOv8s"
+    - label: "YOLOv8"
 scales: ['n', 's', 'm', 'l']
 folds: [1, 2, 3]
 metrics_to_plot: ['metrics/mAP50(B)', 'metrics/mAP50-95(B)']

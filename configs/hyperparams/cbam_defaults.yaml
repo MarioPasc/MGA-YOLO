@@ -24,7 +24,7 @@ name: "MaskedCBAM_YOLOv8s_area"
 project: "/home/mpascual/research/results/mga/MGA_YOLO"
 
 # Mask-Related Hyperparameters
-MGA_PROB_MODE: False # False: binary masks, True: probabilistic masks
+MGA_PROB_MODE: True # False: binary masks, True: probabilistic masks
 MGA_PROB_APPROACH: gumbel  #  (only used if MGA_PROB_MODE=True) 
 MGA_MASK_METHOD: area
 MGA_MASK_BRIDGE: 0
