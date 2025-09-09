@@ -1,32 +1,46 @@
-root_dir: /home/mpascual/misc/x2go_shared/experiment
-out_dir: /home/mpascual/research/results/mga/plots/performance
+root_dir: /media/mpascual/PortableSSD/Coronariografías/MGA_YOLO/results/performance_experiments
+out_dir: /media/mpascual/PortableSSD/Coronariografías/MGA_YOLO/results/plots/performance_experiments
 models: 
-  - MaskedCBAM: 
-    - color: "#F94902"
-    - linestyle: "-"
-    - marker: "s"
-    - markersize: 1.5
-    - label: "CBAM"
-  - MaskedSPADE: 
-    - color: "#F19903"
-    - linestyle: "-"
-    - marker: "s"
-    - markersize: 1.5
-    - label: "SPADE"
-  - MaskedECA: 
+  - MaskCBAM: 
     - color: "#CEFFFF"
     - linestyle: "-"
     - marker: "s"
     - markersize: 1.5
-    - label: "ECA"
-  - BaseYOLO:
-    - color: "#AAAAAA"
-    - linestyle: "--"
-    - marker: "o"
+    - label: "CBAM"
+  - MaskCBAM_Gunbel: 
+    - color: "#C6F7D6"
+    - linestyle: "-"
+    - marker: "s"
     - markersize: 1.5
-    - label: "YOLOv8"
+    - label: "CBAM-Gumbel"
+
+  - MaskSPADE: 
+    - color: "#BBE453"
+    - linestyle: "-"
+    - marker: "s"
+    - markersize: 1.5
+    - label: "SPADE"
+  - MaskSPADE_Gunbel: 
+    - color: "#D5CE04"
+    - linestyle: "-"
+    - marker: "s"
+    - markersize: 1.5
+    - label: "SPADE-Gumbel"
+
+  - MaskECA: 
+    - color: "#F19903"
+    - linestyle: "-"
+    - marker: "s"
+    - markersize: 1.5
+    - label: "ECA"
+  - MaskECA_Gunbel: 
+    - color: "#F6790B"
+    - linestyle: "-"
+    - marker: "s"
+    - markersize: 1.5
+    - label: "ECA-Gumbel"
 scales: ['n', 's', 'm', 'l']
 folds: [1, 2, 3]
 metrics_to_plot: ['metrics/mAP50(B)', 'metrics/mAP50-95(B)']
-size_to_plot: ['model_parameters', 'model_gflops640', 'model_gflops']
+size_to_plot: ['model_parameters', 'model_gflops_640']
 method: 'max'

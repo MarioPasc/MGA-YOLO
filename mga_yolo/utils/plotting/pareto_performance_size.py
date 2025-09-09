@@ -50,8 +50,22 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-from .model_comparison import configure_matplotlib  # reuse project style
+from mga_yolo.utils.plotting.model_comparison import configure_matplotlib  # reuse project style
 
+# Known aliases for size keys seen in profiling files
+SIZE_ALIASES = {
+	"model_gflops640": "model_gflops_640",
+	"gflops640": "model_gflops_640",
+	"gflops@640": "model_gflops_640",
+	"gflops": "model_gflops",
+	"params": "model_parameters",
+}
+
+# Optional model-name aliases (folder → config key)
+DEFAULT_MODEL_ALIASES = {
+	"yolov8": "BaseYOLO",
+	"yolo": "BaseYOLO",
+}
 # --------------------------------------------------------------------------------------
 # Data structures
 # --------------------------------------------------------------------------------------
@@ -131,6 +145,16 @@ def load_performance_size_config(path: Path) -> Dict[str, object]:
 				label=str(label) if isinstance(label, str) else str(model_key),
 			)
 	cfg['model_styles'] = model_styles
+
+	# Optional explicit model aliases in YAML
+	# Example:
+	# model_aliases:
+	#   yolov8: BaseYOLO
+	model_aliases = cfg.get('model_aliases', {}) or {}
+	if not isinstance(model_aliases, dict):
+		logging.warning("Ignoring non-dict model_aliases in config.")
+		model_aliases = {}
+	cfg['model_aliases'] = {str(k).lower(): str(v) for k, v in model_aliases.items()}
 	return cfg
 
 
@@ -144,7 +168,9 @@ def _canonical_model_key(name: str) -> str:
 
 
 def discover_runs(root: Path) -> List[Path]:
-	return [p for p in root.iterdir() if p.is_dir()]
+	runs = [p for p in root.iterdir() if p.is_dir()]
+	logging.debug("discover_runs: %d dirs at %s", len(runs), root)
+	return runs
 
 
 def parse_run_dir(dir_path: Path) -> Optional[Tuple[str, str, int]]:
@@ -162,6 +188,7 @@ def parse_run_dir(dir_path: Path) -> Optional[Tuple[str, str, int]]:
 		return None
 	scale = parts[-2]
 	model_base = '_'.join(parts[:-2])
+	logging.debug("parse_run_dir: %s → model=%s scale=%s fold=%d", dir_path.name, model_base, scale, fold)
 	return model_base, scale, fold
 
 
@@ -171,7 +198,9 @@ def load_results_csv(path: Path) -> Optional[pd.DataFrame]:
 		logging.warning("results.csv missing in %s", path.name)
 		return None
 	try:
-		return pd.read_csv(csv_path)
+		df = pd.read_csv(csv_path)
+		logging.debug("Loaded %s with %d rows, %d cols", csv_path.name, len(df), df.shape[1])
+		return df
 	except Exception as e:
 		logging.warning("Failed reading %s: %s", csv_path, e)
 		return None
@@ -185,13 +214,22 @@ def extract_fold_metrics(df: pd.DataFrame, metrics: Sequence[str], method: str) 
 	out_metrics: Dict[str, float] = {}
 	for m in metrics:
 		if m not in df.columns:
+			logging.debug("Metric column missing in results.csv: %s", m)
 			continue
 		series = pd.to_numeric(df[m], errors='coerce').dropna()
 		if series.empty:
+			logging.debug("Metric column empty after coercion: %s", m)
 			continue
 		out_metrics[m] = float(series.max()) if method == 'max' else float(series.mean())
+		logging.debug("Metric %s (%s over epochs) = %.6f", m, method, out_metrics[m])
 	return out_metrics
 
+
+def _normalize_size_key(k: str) -> str:
+	k2 = SIZE_ALIASES.get(k, k)
+	# Also normalize common variants
+	k2 = k2.replace(" ", "_").replace("-", "_")
+	return k2
 
 def load_profiling_sizes(run_dir: Path, size_cols: Sequence[str]) -> Dict[str, float]:
 	"""Load size metrics from profiling.yaml (flat or nested)."""
@@ -205,6 +243,8 @@ def load_profiling_sizes(run_dir: Path, size_cols: Sequence[str]) -> Dict[str, f
 	except Exception as e:  # pragma: no cover
 		logging.warning("Failed to parse profiling.yaml in %s: %s", run_dir.name, e)
 		return {}
+	# Normalize requested size keys once
+	normalized_targets = {_normalize_size_key(s) for s in size_cols}
 	results: Dict[str, float] = {}
 
 	def recurse(obj: Any, path: str = "") -> None:
@@ -217,10 +257,16 @@ def load_profiling_sizes(run_dir: Path, size_cols: Sequence[str]) -> Dict[str, f
 				recurse(v, f"{path}[{i}]")
 		else:
 			leaf_key = path.split('.')[-1]
-			if leaf_key in size_cols and isinstance(obj, (int, float)):
-				results[leaf_key] = float(obj)
+			leaf_key_norm = _normalize_size_key(leaf_key)
+			if leaf_key_norm in normalized_targets and isinstance(obj, (int, float)):
+				results[leaf_key_norm] = float(obj)
 
 	recurse(data)
+	for s in normalized_targets:
+		if s not in results:
+			logging.debug("Profiling size key missing: %s in %s", s, run_dir.name)
+		else:
+			logging.debug("Profiling %s = %.6f in %s", s, results[s], run_dir.name)
 	return results
 
 
@@ -268,6 +314,7 @@ def compute_pareto(points: List[PointStats], size_key: str, metric_key: str) -> 
 	"""Return non-dominated points (min size, max metric)."""
 	# Filter points with both values present
 	valid = [p for p in points if size_key in p.size_values and metric_key in p.metric_values]
+	logging.debug("compute_pareto: valid points=%d for size=%s metric=%s", len(valid), size_key, metric_key)
 	# Sort by size ascending, metric descending to make scan easy
 	valid.sort(key=lambda p: (p.size_values[size_key], -p.metric_values[metric_key]))
 	pareto: List[PointStats] = []
@@ -314,6 +361,8 @@ def plot_one(metric: str, size_key: str, points: List[PointStats], model_styles:
 		style = model_styles.get(mkey, ModelStyle())
 		ax.plot([p.size_values[size_key] for p in plist], [p.metric_values[metric] for p in plist],
 			color=style.color, linestyle=style.linestyle, linewidth=1.0, alpha=0.6)
+	logging.info("Plotted figure: %s vs %s | models=%d points=%d",
+				 metric, size_key, len(by_model), sum(len(v) for v in by_model.values()))
 
 	# Pareto front overlay
 	pareto = compute_pareto(points, size_key=size_key, metric_key=metric)
@@ -331,16 +380,17 @@ def plot_one(metric: str, size_key: str, points: List[PointStats], model_styles:
 	ax.grid(True, alpha=0.3)
 
 	# Legend
+	import matplotlib.lines as mlines
 	handles = []
 	labels = []
 	for mkey, style in model_styles.items():
 		if mkey not in by_model:
 			continue
-		h = plt.Line2D([], [], marker=style.marker or 'o', color=style.color, linestyle='None', markersize=style.markersize)
+		h = mlines.Line2D([], [], marker=style.marker or 'o', color=style.color, linestyle='None', markersize=style.markersize)
 		handles.append(h)
 		labels.append(style.label or mkey)
 	if len(pareto) >= 2:
-		handles.append(plt.Line2D([], [], color='black', linestyle='--', label='Pareto'))
+		handles.append(mlines.Line2D([], [], color='black', linestyle='--', label='Pareto'))
 		labels.append('Pareto')
 	if handles:
 		ax.legend(handles, labels, loc='best', fontsize=7)
@@ -381,7 +431,8 @@ def build_pareto_from_config(cfg_path: Path) -> Path:
 		raise TypeError('scales must be a list')
 
 	metrics: List[str] = [str(m) for m in cast(Sequence[Any], cfg['metrics_to_plot'])]
-	sizes: List[str] = [str(s) for s in cast(Sequence[Any], cfg['size_to_plot'])]
+	# Normalize size keys early so downstream uses a single canonical form
+	sizes: List[str] = [_normalize_size_key(str(s)) for s in cast(Sequence[Any], cfg['size_to_plot'])]
 	method_obj: Any = cfg.get('method', 'mean')
 	method: str = str(method_obj).lower()
 	folds: List[int] = [int(f) for f in cast(Sequence[Any], cfg['folds'])]
@@ -399,6 +450,14 @@ def build_pareto_from_config(cfg_path: Path) -> Path:
 		# allow variant without 'mask' prefix as fallback
 		if mk.lower().startswith('masked'):
 			canonical_to_modelkey[_canonical_model_key(mk).replace('mask', '')] = mk
+	# Add default aliases only for models present in styles
+	model_aliases_raw = cfg.get('model_aliases', {})
+	if not isinstance(model_aliases_raw, dict):
+		model_aliases_raw = {}
+	model_aliases: Dict[str, str] = {str(k): str(v) for k, v in model_aliases_raw.items()}
+	for alias, target in DEFAULT_MODEL_ALIASES.items():
+		if target in model_styles and alias not in model_aliases:
+			model_aliases[alias] = target
 
 	collected: List[PointStats] = []
 	# Build nested dictionary: (model_key, scale) -> list of per-fold tuples
@@ -407,31 +466,49 @@ def build_pareto_from_config(cfg_path: Path) -> Path:
 	for rdir in runs:
 		parsed = parse_run_dir(rdir)
 		if parsed is None:
+			logging.debug("Skipping dir (pattern mismatch): %s", rdir.name)
 			continue
 		model_base, scale, fold = parsed
 		if scale not in scales or fold not in folds:
+			logging.debug("Skipping dir (scale/fold not requested): %s", rdir.name)
 			continue
 		canon = _canonical_model_key(model_base)
-		# find model key by prefix match among canonical mapping
+		# find model key by prefix match among canonical mapping, then aliases
 		matched_key: Optional[str] = None
-		for ck, original in canonical_to_modelkey.items():
+		for ck, original in sorted(canonical_to_modelkey.items(), key=lambda x: -len(x[0])):
 			if canon.startswith(ck):
 				matched_key = original
 				break
 		if matched_key is None:
+			# Try aliases: if canon starts with alias, map to target style key
+			for alias, target in model_aliases.items():
+				if canon.startswith(alias.lower()):
+					matched_key = target
+					logging.debug("Alias matched: %s → %s (dir=%s)", alias, target, rdir.name)
+					break
+		if matched_key is None:
+			logging.debug("Skipping dir (unmatched model): %s (canon=%s)", rdir.name, canon)
 			continue
 		df = load_results_csv(rdir)
 		if df is None:
 			continue
 		fold_metrics = extract_fold_metrics(df, metrics, method)
 		if not fold_metrics:
+			logging.debug("Skipping dir (no usable metrics after extraction): %s", rdir.name)
 			continue
 		fold_sizes = load_profiling_sizes(rdir, sizes)
+		if not any(k in fold_sizes for k in sizes):
+			logging.debug("Skipping dir (no requested size keys in profiling): %s", rdir.name)
+			# Still store metrics so other plots without these sizes work
 		accumulator.setdefault((matched_key, scale), []).append((fold_metrics, fold_sizes))
 
 	# Aggregate
 	for (model_key, scale), per_fold in accumulator.items():
 		metric_means, metric_stds, size_means = aggregate_across_folds(per_fold, metrics, sizes)
+		if not metric_means:
+			logging.debug("No metric means for %s %s", model_key, scale)
+		if not size_means:
+			logging.debug("No size means for %s %s", model_key, scale)
 		collected.append(PointStats(model_key=model_key, scale=scale,
 									metric_values=metric_means, metric_stds=metric_stds,
 									size_values=size_means))
